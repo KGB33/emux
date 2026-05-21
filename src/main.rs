@@ -1,4 +1,6 @@
-use std::{fs, path::PathBuf, process};
+mod commands;
+
+use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
@@ -12,9 +14,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Read a file and print its contents to stdout.
+    /// Verify the syntax of a Lua file.
     Verify {
-        /// Path to the file to verify.
+        /// Path to the Lua file to verify.
         file: PathBuf,
     },
 }
@@ -23,12 +25,6 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Verify { file } => {
-            let contents = fs::read_to_string(&file).unwrap_or_else(|err| {
-                eprintln!("error: could not read `{}`: {err}", file.display());
-                process::exit(1);
-            });
-            print!("{contents}");
-        }
+        Commands::Verify { file } => commands::verify::run(file),
     }
 }
