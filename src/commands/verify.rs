@@ -1,9 +1,21 @@
-use mlua::{Error, Lua};
+use mlua::{Error, Function, Lua, Table};
 use std::{fs, path::PathBuf, process};
+
+const FENNEL: &str = include_str!("../fennel-1.6.1.lua");
 
 pub fn verify_source(source: &str, name: &str) -> Result<(), Error> {
     let lua = Lua::new();
     lua.load(source).set_name(name).into_function()?;
+    Ok(())
+}
+
+pub fn verify_fennel_source(source: &str, name: &str) -> Result<(), Error> {
+    let lua = Lua::new();
+    let fennel: Table = lua.load(FENNEL).set_name("fennel-1.6.1").eval()?;
+    let compile: Function = fennel.get("compileString")?;
+    let opts = lua.create_table()?;
+    opts.set("filename", name)?;
+    compile.call::<String>((source, opts))?;
     Ok(())
 }
 
@@ -14,7 +26,15 @@ pub fn run(file: PathBuf) {
     });
 
     let name = file.display().to_string();
-    verify_source(&source, &name).unwrap_or_else(|err| {
+    let result = match file.extension().and_then(|e| e.to_str()) {
+        Some("fnl") => verify_fennel_source(&source, &name),
+        Some("lua") => verify_source(&source, &name),
+        _ => {
+            eprintln!("error: unsupported file type `{}`", file.display());
+            process::exit(1);
+        }
+    };
+    result.unwrap_or_else(|err| {
         eprintln!("error: {err}");
         process::exit(1);
     });
@@ -45,5 +65,26 @@ mod tests {
     fn valid_function_definition_passes() {
         let src = "local function add(a, b) return a + b end";
         assert!(verify_source(src, "test").is_ok());
+    }
+
+    #[test]
+    fn valid_fennel_passes() {
+        assert!(verify_fennel_source("(local x (+ 1 2))", "test").is_ok());
+    }
+
+    #[test]
+    fn fennel_syntax_error_fails() {
+        assert!(verify_fennel_source("(def bad ((", "test").is_err());
+    }
+
+    #[test]
+    fn empty_fennel_passes() {
+        assert!(verify_fennel_source("", "test").is_ok());
+    }
+
+    #[test]
+    fn valid_fennel_function_passes() {
+        let src = "(fn add [a b] (+ a b))";
+        assert!(verify_fennel_source(src, "test").is_ok());
     }
 }

@@ -14,9 +14,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Verify the syntax of a Lua file.
+    /// Verify the syntax of a Lua or Fennel file.
     Verify {
-        /// Path to the Lua file to verify.
+        /// Path to the Lua (.lua) or Fennel (.fnl) file to verify.
         file: PathBuf,
     },
 }

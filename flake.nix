@@ -22,7 +22,13 @@
         inherit (pkgs) lib;
 
         craneLib = crane.mkLib pkgs;
-        src = craneLib.cleanCargoSource ./.;
+        fennelFilter = path: _type: builtins.match ".*fennel-[0-9]+\\.[0-9]+\\.[0-9]+\\.lua$" path != null;
+        fennelOrCargo = path: type: (fennelFilter path type) || (craneLib.filterCargoSources path type);
+        src = lib.cleanSourceWith {
+          src = ./.;
+          filter = fennelOrCargo;
+          name = "source";
+        };
 
         commonArgs = {
           inherit src;

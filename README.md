@@ -15,13 +15,13 @@ Each project configuration gets one or more `locators` and an `overrider`.
 For example, to override the port the API server is run on:
 
 ```fennel
-(cfg api-port
+(cfg :api-port
   (locate
-    (env-file "api/.env" "PORT")
+    (env-file "api/.env" :PORT)
     (-> 
       (file "client/assets/environment.local.json")
-      (regex "8001")))
-  (override int/random))
+      (regex :8001)))
+  (override random-port))
 ```
 
 Here, we locate two instances, the value of the `PORT` variable in `api/.env` and any occurrences of `8001` in the local JSON environment file. 
