@@ -73,6 +73,21 @@ impl Filter {
                 }
                 Ok(all)
             }
+            Filter::EnvFile { path, variable } => {
+                let content = std::fs::read_to_string(path)?;
+                let prefix = format!("{variable}=");
+                let matches = content
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, line)| line.starts_with(&prefix))
+                    .map(|(i, line)| Match {
+                        path: path.clone(),
+                        line_number: (i + 1) as u64,
+                        line: line.to_owned(),
+                    })
+                    .collect();
+                Ok(matches)
+            }
             _ => Ok(vec![]),
         }
     }
@@ -152,6 +167,20 @@ mod tests {
         let found = filter.expand(&dir).unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0], dir.join("config.json"));
+    }
+
+    #[test]
+    fn filter_env_file_search_finds_variable() {
+        let dir = std::env::temp_dir().join("emux_test_envfile");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, "HOST=localhost\nPORT=8001\nDEBUG=true\n").unwrap();
+
+        let filter = Filter::EnvFile { path: path.clone(), variable: "PORT".to_string() };
+        let matches = filter.search(&[]).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_number, 2);
+        assert_eq!(matches[0].line, "PORT=8001");
     }
 
     #[test]

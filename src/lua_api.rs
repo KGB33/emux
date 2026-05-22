@@ -2,9 +2,18 @@ use mlua::{Lua, Result as LuaResult, Table};
 
 const EMUX_LIB: &str = include_str!("emux.lua");
 
-fn env_file(_: &Lua, (path, variable): (String, String)) -> LuaResult<()> {
-    println!("envFile({path:?}, {variable:?})");
-    Ok(())
+fn env_file(lua: &Lua, (path, variable): (String, String)) -> LuaResult<Table> {
+    let filter = lua.create_table()?;
+    filter.set("__kind", "env_file")?;
+    filter.set("path", path)?;
+    filter.set("variable", variable)?;
+
+    let filters = lua.create_table()?;
+    filters.set(1, filter)?;
+
+    let locator = lua.create_table()?;
+    locator.set("filters", filters)?;
+    Ok(locator)
 }
 
 fn files(lua: &Lua, glob: String) -> LuaResult<Table> {
@@ -65,11 +74,17 @@ mod tests {
     }
 
     #[test]
-    fn emux_l_env_file_is_callable() {
+    fn emux_l_env_file_returns_locator() {
         let lua = loaded_lua();
-        lua.load(r#"emux.l.envFile("api/.env", "PORT")"#)
-            .exec()
+        let locator: Table = lua
+            .load(r#"emux.l.envFile("api/.env", "PORT")"#)
+            .eval()
             .unwrap();
+        let filters: Table = locator.get("filters").unwrap();
+        let filter: Table = filters.get(1).unwrap();
+        assert_eq!(filter.get::<String>("__kind").unwrap(), "env_file");
+        assert_eq!(filter.get::<String>("path").unwrap(), "api/.env");
+        assert_eq!(filter.get::<String>("variable").unwrap(), "PORT");
     }
 
     #[test]
