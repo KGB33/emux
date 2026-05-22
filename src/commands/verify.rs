@@ -1,7 +1,5 @@
-use mlua::{Error, Function, Lua, Table};
+use mlua::{Error, Lua};
 use std::{fs, path::PathBuf, process};
-
-const FENNEL: &str = include_str!("../fennel-1.6.1.lua");
 
 pub fn verify_source(source: &str, name: &str) -> Result<(), Error> {
     let lua = Lua::new();
@@ -11,11 +9,7 @@ pub fn verify_source(source: &str, name: &str) -> Result<(), Error> {
 
 pub fn verify_fennel_source(source: &str, name: &str) -> Result<(), Error> {
     let lua = Lua::new();
-    let fennel: Table = lua.load(FENNEL).set_name("fennel-1.6.1").eval()?;
-    let compile: Function = fennel.get("compileString")?;
-    let opts = lua.create_table()?;
-    opts.set("filename", name)?;
-    compile.call::<String>((source, opts))?;
+    crate::lua_api::compile_fennel(&lua, source, name)?;
     Ok(())
 }
 
