@@ -45,27 +45,27 @@ mod tests {
     }
 
     #[test]
-    fn emux_env_file_is_callable() {
+    fn emux_l_env_file_is_callable() {
         let lua = loaded_lua();
-        lua.load(r#"emux.envFile("api/.env", "PORT")"#).exec().unwrap();
+        lua.load(r#"emux.l.envFile("api/.env", "PORT")"#).exec().unwrap();
     }
 
     #[test]
-    fn emux_files_is_callable() {
+    fn emux_l_files_is_callable() {
         let lua = loaded_lua();
-        lua.load(r#"emux.files("src/**/*.rs")"#).exec().unwrap();
+        lua.load(r#"emux.l.files("src/**/*.rs")"#).exec().unwrap();
     }
 
     #[test]
-    fn emux_regex_is_callable() {
+    fn emux_l_regex_is_callable() {
         let lua = loaded_lua();
-        lua.load(r#"emux.regex(emux.files("src/**/*.rs"), "8001")"#).exec().unwrap();
+        lua.load(r#"emux.l.regex(emux.l.files("src/**/*.rs"), "8001")"#).exec().unwrap();
     }
 
     #[test]
-    fn emux_int_random_is_random_port_table() {
+    fn emux_o_rand_port_is_random_port_table() {
         let lua = loaded_lua();
-        let kind: String = lua.load(r#"emux.int.random.__kind"#).eval().unwrap();
+        let kind: String = lua.load(r#"emux.o.randPort.__kind"#).eval().unwrap();
         assert_eq!(kind, "random_port");
     }
 }
