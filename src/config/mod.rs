@@ -2,6 +2,7 @@ mod locator;
 mod overrider;
 
 pub use locator::Locator;
+use locator::Target;
 pub use overrider::Overrider;
 
 use std::collections::HashMap;
@@ -46,10 +47,7 @@ pub fn load_config_file(file: &Path) -> Result<Cfg, Box<dyn std::error::Error>> 
 pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::error::Error>> {
     let mut out = vec![];
     for (name, entry) in cfg {
-        let mut targets = vec![];
-        for locator in &entry.locate {
-            targets.extend(locator.locate(dir)?);
-        }
+        let targets = entry.locate_all(dir)?;
         let ir = entry.overrider.ir_label();
 
         // Read each file at most once across all targets
@@ -84,11 +82,7 @@ pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::er
 
 pub fn apply_cfg(cfg: &Cfg, dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     for entry in cfg.values() {
-        let mut targets = vec![];
-        for locator in &entry.locate {
-            targets.extend(locator.locate(dir)?);
-        }
-        entry.overrider.apply(&targets)?;
+        entry.overrider.apply(&entry.locate_all(dir)?)?;
     }
     Ok(())
 }
@@ -102,6 +96,16 @@ pub fn cfg_from_lua(value: Value, lua: &Lua) -> LuaResult<Cfg> {
         map.insert(key, ConfigEntry::from_lua(val, lua)?);
     }
     Ok(map)
+}
+
+impl ConfigEntry {
+    fn locate_all(&self, dir: &Path) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+        let mut targets = vec![];
+        for locator in &self.locate {
+            targets.extend(locator.locate(dir)?);
+        }
+        Ok(targets)
+    }
 }
 
 impl FromLua for ConfigEntry {

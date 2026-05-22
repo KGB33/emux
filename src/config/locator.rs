@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use glob::glob;
+use grep::matcher::Matcher;
 use grep::regex::RegexMatcher;
 use grep::searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
 use mlua::{FromLua, Lua, Result as LuaResult, Value};
@@ -21,114 +22,98 @@ pub struct Target {
     pub target: String,
 }
 
-struct MatchSink<'p> {
-    path: &'p Path,
-    pattern: &'p str,
-    matches: Vec<Target>,
-}
-
-impl Sink for MatchSink<'_> {
-    type Error = std::io::Error;
-    fn matched(&mut self, _: &Searcher, m: &SinkMatch) -> Result<bool, Self::Error> {
-        self.matches.push(Target {
-            path: self.path.to_owned(),
-            line_number: m.line_number().unwrap_or(0),
-            target: self.pattern.to_owned(),
-        });
-        Ok(true)
-    }
-}
-
 /// A single step in a locator pipeline.
 #[derive(Debug)]
 pub enum Filter {
-    /// `file("glob")` / `files("glob")` — repo → files matching the glob.
+    /// `files("glob")` — repo → files matching the glob.
     File { glob: String },
     /// `regex("pattern")` — files → line locations matching the pattern.
     Regex { pattern: String },
-    /// `env-file("path", "VAR")` — targets a specific variable in a dotenv-style file.
+    /// `envFile("path", "VAR")` — targets a specific variable in a dotenv-style file.
     EnvFile { path: PathBuf, variable: String },
-}
-
-impl Filter {
-    // Only valid for the File variant; call sites in locate() must respect this.
-    pub(super) fn expand(&self, dir: &Path) -> Result<Vec<PathBuf>, glob::PatternError> {
-        match self {
-            Filter::File { glob: pattern } => {
-                let full = dir.join(pattern).to_string_lossy().into_owned();
-                Ok(glob(&full)?.filter_map(|e| e.ok()).collect())
-            }
-            _ => unreachable!("expand is only valid for the File variant"),
-        }
-    }
-
-    // Only valid for Regex and EnvFile variants; call sites in locate() must respect this.
-    pub(super) fn search(
-        &self,
-        paths: &[PathBuf],
-    ) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
-        match self {
-            Filter::Regex { pattern } => {
-                let matcher = RegexMatcher::new(pattern)?;
-                let mut searcher = SearcherBuilder::new().line_number(true).build();
-                let mut all = vec![];
-                for path in paths {
-                    let mut sink = MatchSink {
-                        path,
-                        pattern,
-                        matches: vec![],
-                    };
-                    searcher.search_path(&matcher, path, &mut sink)?;
-                    all.extend(sink.matches);
-                }
-                Ok(all)
-            }
-            Filter::EnvFile { path, variable } => {
-                let content = std::fs::read_to_string(path)?;
-                let prefix = format!("{variable}=");
-                let targets = content
-                    .lines()
-                    .enumerate()
-                    .filter(|(_, line)| line.starts_with(&prefix))
-                    .map(|(i, line)| Target {
-                        path: path.clone(),
-                        line_number: (i + 1) as u64,
-                        target: line[prefix.len()..].to_owned(),
-                    })
-                    .collect();
-                Ok(targets)
-            }
-            Filter::File { .. } => unreachable!("search is not valid for the File variant"),
-        }
-    }
 }
 
 impl Locator {
     pub fn locate(&self, dir: &Path) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
-        // Stage 1 — path expansion: File filters narrow the repo to matching paths.
-        // Stage 2 — line targeting: the first Regex or EnvFile filter terminates the pipeline
-        //           and returns the matched targets.
         let mut paths: Vec<PathBuf> = vec![];
         for filter in &self.filters {
             match filter {
-                Filter::File { .. } => paths = filter.expand(dir)?,
-                Filter::Regex { .. } => return filter.search(&paths),
+                Filter::File { glob: pattern } => {
+                    let full = dir.join(pattern).to_string_lossy().into_owned();
+                    paths = glob(&full)?.filter_map(|e| e.ok()).collect();
+                }
+                Filter::Regex { pattern } => return search_regex(pattern, &paths),
                 Filter::EnvFile { path, variable } => {
                     let abs = if path.is_absolute() {
                         path.clone()
                     } else {
                         dir.join(path)
                     };
-                    return Filter::EnvFile {
-                        path: abs,
-                        variable: variable.clone(),
-                    }
-                    .search(&[]);
+                    return search_env_file(&abs, variable);
                 }
             }
         }
         Ok(vec![])
     }
+}
+
+fn search_regex(
+    pattern: &str,
+    paths: &[PathBuf],
+) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+    struct MatchSink<'a> {
+        path: &'a Path,
+        matcher: &'a RegexMatcher,
+        matches: Vec<Target>,
+    }
+
+    impl Sink for MatchSink<'_> {
+        type Error = std::io::Error;
+        fn matched(&mut self, _: &Searcher, m: &SinkMatch) -> Result<bool, Self::Error> {
+            let line = m.bytes();
+            if let Ok(Some(mat)) = self.matcher.find(line) {
+                let matched_text = std::str::from_utf8(&line[mat.start()..mat.end()])
+                    .unwrap_or("")
+                    .to_owned();
+                self.matches.push(Target {
+                    path: self.path.to_owned(),
+                    line_number: m.line_number().unwrap_or(0),
+                    target: matched_text,
+                });
+            }
+            Ok(true)
+        }
+    }
+
+    let matcher = RegexMatcher::new(pattern)?;
+    let mut searcher = SearcherBuilder::new().line_number(true).build();
+    let mut all = vec![];
+    for path in paths {
+        let mut sink = MatchSink {
+            path,
+            matcher: &matcher,
+            matches: vec![],
+        };
+        searcher.search_path(&matcher, path, &mut sink)?;
+        all.extend(sink.matches);
+    }
+    Ok(all)
+}
+
+fn search_env_file(path: &Path, variable: &str) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let prefix = format!("{variable}=");
+    let targets = content
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.starts_with(&prefix))
+        .map(|(i, line)| Target {
+            path: path.to_owned(),
+            line_number: (i + 1) as u64,
+            target: line[prefix.len()..].to_owned(),
+        })
+        .collect();
+    Ok(targets)
 }
 
 impl FromLua for Locator {
@@ -177,48 +162,64 @@ mod tests {
     }
 
     #[test]
-    fn filter_regex_search_finds_matching_lines() {
+    fn locate_regex_finds_matching_lines() {
         let dir = std::env::temp_dir().join("emux_test_search");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
         std::fs::write(&path, "no match here\nPORT=8001\nalso no match\n").unwrap();
 
-        let filter = Filter::Regex {
-            pattern: "PORT=8001".to_string(),
+        let locator = Locator {
+            filters: vec![
+                Filter::File {
+                    glob: "config.json".to_string(),
+                },
+                Filter::Regex {
+                    pattern: "PORT=8001".to_string(),
+                },
+            ],
         };
-        let targets = filter.search(&[path]).unwrap();
+        let targets = locator.locate(&dir).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].line_number, 2);
         assert_eq!(targets[0].target, "PORT=8001");
     }
 
     #[test]
-    fn filter_file_expand_finds_matching_files() {
+    fn locate_file_glob_limits_search_scope() {
         let dir = std::env::temp_dir().join("emux_test_expand");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.json"), "{}").unwrap();
-        std::fs::write(dir.join("other.txt"), "").unwrap();
+        std::fs::write(dir.join("config.json"), "PORT=8001\n").unwrap();
+        std::fs::write(dir.join("other.txt"), "PORT=8001\n").unwrap();
 
-        let filter = Filter::File {
-            glob: "*.json".to_string(),
+        let locator = Locator {
+            filters: vec![
+                Filter::File {
+                    glob: "*.json".to_string(),
+                },
+                Filter::Regex {
+                    pattern: "PORT=8001".to_string(),
+                },
+            ],
         };
-        let found = filter.expand(&dir).unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0], dir.join("config.json"));
+        let targets = locator.locate(&dir).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].path, dir.join("config.json"));
     }
 
     #[test]
-    fn filter_env_file_search_finds_variable() {
+    fn locate_env_file_finds_variable() {
         let dir = std::env::temp_dir().join("emux_test_envfile");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(".env");
         std::fs::write(&path, "HOST=localhost\nPORT=8001\nDEBUG=true\n").unwrap();
 
-        let filter = Filter::EnvFile {
-            path: path.clone(),
-            variable: "PORT".to_string(),
+        let locator = Locator {
+            filters: vec![Filter::EnvFile {
+                path: path.clone(),
+                variable: "PORT".to_string(),
+            }],
         };
-        let targets = filter.search(&[]).unwrap();
+        let targets = locator.locate(&dir).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].line_number, 2);
         assert_eq!(targets[0].target, "8001");

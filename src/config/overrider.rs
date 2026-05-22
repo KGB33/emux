@@ -43,34 +43,24 @@ fn replace_in_file(
     new: &str,
 ) -> Result<(), std::io::Error> {
     let content = std::fs::read_to_string(path)?;
-    let mut result = String::with_capacity(content.len());
-    let mut current_line: u64 = 1;
-    let mut remaining = content.as_str();
-
-    while !remaining.is_empty() {
-        // Split at the next \n, keeping the newline character(s) with the chunk.
-        let (chunk, rest) = match remaining.find('\n') {
-            Some(pos) => (&remaining[..=pos], &remaining[pos + 1..]),
-            None => (remaining, ""),
-        };
-        if current_line == line_number {
-            // Detach the line ending so replacement doesn't touch it.
-            let ending = if chunk.ends_with("\r\n") {
+    let result: String = content
+        .split_inclusive('\n')
+        .enumerate()
+        .map(|(i, line)| {
+            if (i + 1) as u64 != line_number {
+                return line.to_owned();
+            }
+            let ending = if line.ends_with("\r\n") {
                 "\r\n"
-            } else if chunk.ends_with('\n') {
+            } else if line.ends_with('\n') {
                 "\n"
             } else {
                 ""
             };
-            let body = &chunk[..chunk.len() - ending.len()];
-            result.push_str(&body.replacen(old, new, 1));
-            result.push_str(ending);
-        } else {
-            result.push_str(chunk);
-        }
-        current_line += 1;
-        remaining = rest;
-    }
+            let body = &line[..line.len() - ending.len()];
+            format!("{}{ending}", body.replacen(old, new, 1))
+        })
+        .collect();
     std::fs::write(path, result)
 }
 
