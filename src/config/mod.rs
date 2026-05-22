@@ -1,7 +1,9 @@
+#![allow(dead_code)]
+
 mod locator;
 mod overrider;
 
-pub use locator::{Filter, Locator};
+pub use locator::Locator;
 pub use overrider::Overrider;
 
 use std::collections::HashMap;

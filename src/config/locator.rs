@@ -85,10 +85,13 @@ mod tests {
     #[test]
     fn filter_env_file_deserializes() {
         let lua = Lua::new();
-        let v = eval(&lua, r#"{ __kind = "env_file", path = "api/.env", variable = "PORT" }"#);
+        let v = eval(
+            &lua,
+            r#"{ __kind = "env_file", path = "api/.env", variable = "PORT" }"#,
+        );
         let f = Filter::from_lua(v, &lua).unwrap();
         assert!(
-            matches!(f, Filter::EnvFile { path, variable } if path == PathBuf::from("api/.env") && variable == "PORT")
+            matches!(f, Filter::EnvFile { path, variable } if *path == *"api/.env" && variable == "PORT")
         );
     }
 
@@ -102,7 +105,10 @@ mod tests {
     #[test]
     fn locator_single_filter() {
         let lua = Lua::new();
-        let v = eval(&lua, r#"{ filters = { { __kind = "file", glob = "*.lua" } } }"#);
+        let v = eval(
+            &lua,
+            r#"{ filters = { { __kind = "file", glob = "*.lua" } } }"#,
+        );
         let loc = Locator::from_lua(v, &lua).unwrap();
         assert_eq!(loc.filters.len(), 1);
         assert!(matches!(&loc.filters[0], Filter::File { glob } if glob == "*.lua"));

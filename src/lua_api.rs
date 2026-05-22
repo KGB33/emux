@@ -20,8 +20,8 @@ fn regex(_: &Lua, (_target, pattern): (Value, String)) -> LuaResult<()> {
 pub fn load(lua: &Lua) -> LuaResult<()> {
     let globals = lua.globals();
     globals.set("__emux_env_file", lua.create_function(env_file)?)?;
-    globals.set("__emux_files",    lua.create_function(files)?)?;
-    globals.set("__emux_regex",    lua.create_function(regex)?)?;
+    globals.set("__emux_files", lua.create_function(files)?)?;
+    globals.set("__emux_regex", lua.create_function(regex)?)?;
 
     let emux: Table = lua.load(EMUX_LIB).set_name("emux").eval()?;
     globals.set("emux", emux)?;
@@ -47,7 +47,9 @@ mod tests {
     #[test]
     fn emux_l_env_file_is_callable() {
         let lua = loaded_lua();
-        lua.load(r#"emux.l.envFile("api/.env", "PORT")"#).exec().unwrap();
+        lua.load(r#"emux.l.envFile("api/.env", "PORT")"#)
+            .exec()
+            .unwrap();
     }
 
     #[test]
@@ -59,7 +61,9 @@ mod tests {
     #[test]
     fn emux_l_regex_is_callable() {
         let lua = loaded_lua();
-        lua.load(r#"emux.l.regex(emux.l.files("src/**/*.rs"), "8001")"#).exec().unwrap();
+        lua.load(r#"emux.l.regex(emux.l.files("src/**/*.rs"), "8001")"#)
+            .exec()
+            .unwrap();
     }
 
     #[test]

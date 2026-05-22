@@ -22,11 +22,11 @@
         inherit (pkgs) lib;
 
         craneLib = crane.mkLib pkgs;
-        fennelFilter = path: _type: builtins.match ".*fennel-[0-9]+\\.[0-9]+\\.[0-9]+\\.lua$" path != null;
-        fennelOrCargo = path: type: (fennelFilter path type) || (craneLib.filterCargoSources path type);
+        luaFilter = path: _type: builtins.match ".*\\.lua$" path != null;
+        luaOrCargo = path: type: (luaFilter path type) || (craneLib.filterCargoSources path type);
         src = lib.cleanSourceWith {
           src = ./.;
-          filter = fennelOrCargo;
+          filter = luaOrCargo;
           name = "source";
         };
 

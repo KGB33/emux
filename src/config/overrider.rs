@@ -31,7 +31,10 @@ mod tests {
     fn random_port_deserializes() {
         let lua = Lua::new();
         let v = lua.load(r#"{ __kind = "random_port" }"#).eval().unwrap();
-        assert!(matches!(Overrider::from_lua(v, &lua).unwrap(), Overrider::RandomPort));
+        assert!(matches!(
+            Overrider::from_lua(v, &lua).unwrap(),
+            Overrider::RandomPort
+        ));
     }
 
     #[test]
