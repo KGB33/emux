@@ -1,25 +1,11 @@
-#![allow(dead_code)]
-
 mod locator;
 mod overrider;
 
-#[allow(unused_imports)]
-pub use locator::{Locator, Target};
+pub use locator::Locator;
 pub use overrider::Overrider;
 
-pub struct DiffEntry {
-    pub entry_name: String,
-    pub path: std::path::PathBuf,
-    pub line_number: u64,
-    pub old_line: String,
-    pub new_line: String,
-    pub old_value: String,
-    pub new_value: String,
-}
-
 use std::collections::HashMap;
-
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mlua::{FromLua, Lua, Result as LuaResult, Table, Value};
 
@@ -31,6 +17,32 @@ pub struct ConfigEntry {
     pub overrider: Overrider, // `override` is a reserved keyword
 }
 
+pub struct DiffEntry {
+    pub entry_name: String,
+    pub path: PathBuf,
+    pub line_number: u64,
+    pub old_line: String,
+    pub new_line: String,
+    pub old_value: String,
+    pub new_value: String,
+}
+
+pub fn load_config_file(file: &Path) -> Result<Cfg, Box<dyn std::error::Error>> {
+    let source = std::fs::read_to_string(file)?;
+    let name = file.display().to_string();
+    let lua = Lua::new();
+    crate::lua_api::load(&lua)?;
+    let cfg_val: Value = match file.extension().and_then(|e| e.to_str()) {
+        Some("lua") => lua.load(&source).set_name(&name).eval()?,
+        Some("fnl") => {
+            let lua_src = crate::lua_api::compile_fennel(&lua, &source, &name)?;
+            lua.load(&lua_src).set_name(&name).eval()?
+        }
+        _ => return Err(format!("unsupported file type `{}`", file.display()).into()),
+    };
+    cfg_from_lua(cfg_val, &lua).map_err(Into::into)
+}
+
 pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::error::Error>> {
     let mut out = vec![];
     for (name, entry) in cfg {
@@ -39,8 +51,17 @@ pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::er
             targets.extend(locator.locate(dir)?);
         }
         let ir = entry.overrider.ir_label();
+
+        // Read each file at most once across all targets
+        let mut file_cache: HashMap<PathBuf, String> = HashMap::new();
         for target in &targets {
-            let content = std::fs::read_to_string(&target.path)?;
+            if !file_cache.contains_key(&target.path) {
+                file_cache.insert(target.path.clone(), std::fs::read_to_string(&target.path)?);
+            }
+        }
+
+        for target in &targets {
+            let content = &file_cache[&target.path];
             let old_line = content
                 .lines()
                 .nth((target.line_number - 1) as usize)
@@ -165,5 +186,56 @@ mod tests {
         let lua = Lua::new();
         let v = eval(&lua, "42");
         assert!(cfg_from_lua(v, &lua).is_err());
+    }
+
+    #[test]
+    fn load_config_file_lua() {
+        let dir = std::env::temp_dir().join("emux_test_load_cfg_lua");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("emux.lua");
+        std::fs::write(
+            &path,
+            r#"
+            local cfg = {
+                ["api-port"] = {
+                    locate = { emux.l.envFile("api/.env", "PORT") },
+                    override = emux.o.randPort,
+                },
+            }
+            return cfg
+            "#,
+        )
+        .unwrap();
+        let cfg = load_config_file(&path).unwrap();
+        assert!(cfg.contains_key("api-port"));
+    }
+
+    #[test]
+    fn load_config_file_fennel() {
+        let dir = std::env::temp_dir().join("emux_test_load_cfg_fnl");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("emux.fnl");
+        std::fs::write(
+            &path,
+            r#"
+            (local cfg
+              {"api-port"
+               {:locate [(emux.l.envFile "api/.env" "PORT")]
+                :override emux.o.randPort}})
+            cfg
+            "#,
+        )
+        .unwrap();
+        let cfg = load_config_file(&path).unwrap();
+        assert!(cfg.contains_key("api-port"));
+    }
+
+    #[test]
+    fn load_config_file_unsupported_ext_errors() {
+        let dir = std::env::temp_dir().join("emux_test_load_cfg_ext");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("emux.txt");
+        std::fs::write(&path, "").unwrap();
+        assert!(load_config_file(&path).is_err());
     }
 }

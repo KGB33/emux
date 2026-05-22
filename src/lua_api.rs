@@ -1,6 +1,15 @@
-use mlua::{Lua, Result as LuaResult, Table};
+use mlua::{Function, Lua, Result as LuaResult, Table};
 
 const EMUX_LIB: &str = include_str!("emux.lua");
+pub(crate) const FENNEL: &str = include_str!("fennel-1.6.1.lua");
+
+pub fn compile_fennel(lua: &Lua, source: &str, name: &str) -> LuaResult<String> {
+    let fennel: Table = lua.load(FENNEL).set_name("fennel-1.6.1").eval()?;
+    let compile: Function = fennel.get("compileString")?;
+    let opts = lua.create_table()?;
+    opts.set("filename", name)?;
+    compile.call((source, opts))
+}
 
 fn env_file(lua: &Lua, (path, variable): (String, String)) -> LuaResult<Table> {
     let filter = lua.create_table()?;

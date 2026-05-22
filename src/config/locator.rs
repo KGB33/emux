@@ -51,17 +51,22 @@ pub enum Filter {
 }
 
 impl Filter {
-    pub fn expand(&self, dir: &Path) -> Result<Vec<PathBuf>, glob::PatternError> {
+    // Only valid for the File variant; call sites in locate() must respect this.
+    pub(super) fn expand(&self, dir: &Path) -> Result<Vec<PathBuf>, glob::PatternError> {
         match self {
             Filter::File { glob: pattern } => {
                 let full = dir.join(pattern).to_string_lossy().into_owned();
                 Ok(glob(&full)?.filter_map(|e| e.ok()).collect())
             }
-            _ => Ok(vec![]),
+            _ => unreachable!("expand is only valid for the File variant"),
         }
     }
 
-    pub fn search(&self, paths: &[PathBuf]) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+    // Only valid for Regex and EnvFile variants; call sites in locate() must respect this.
+    pub(super) fn search(
+        &self,
+        paths: &[PathBuf],
+    ) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
         match self {
             Filter::Regex { pattern } => {
                 let matcher = RegexMatcher::new(pattern)?;
@@ -93,13 +98,16 @@ impl Filter {
                     .collect();
                 Ok(targets)
             }
-            _ => Ok(vec![]),
+            Filter::File { .. } => unreachable!("search is not valid for the File variant"),
         }
     }
 }
 
 impl Locator {
     pub fn locate(&self, dir: &Path) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+        // Stage 1 — path expansion: File filters narrow the repo to matching paths.
+        // Stage 2 — line targeting: the first Regex or EnvFile filter terminates the pipeline
+        //           and returns the matched targets.
         let mut paths: Vec<PathBuf> = vec![];
         for filter in &self.filters {
             match filter {
