@@ -1,7 +1,7 @@
 use mlua::{Function, Lua, Result as LuaResult, Table};
 
 const EMUX_LIB: &str = include_str!("emux.lua");
-pub(crate) const FENNEL: &str = include_str!("fennel-1.6.1.lua");
+const FENNEL: &str = include_str!("fennel-1.6.1.lua");
 
 pub fn compile_fennel(lua: &Lua, source: &str, name: &str) -> LuaResult<String> {
     let fennel: Table = lua.load(FENNEL).set_name("fennel-1.6.1").eval()?;
@@ -11,59 +11,9 @@ pub fn compile_fennel(lua: &Lua, source: &str, name: &str) -> LuaResult<String> 
     compile.call((source, opts))
 }
 
-fn env_file(lua: &Lua, (path, variable): (String, String)) -> LuaResult<Table> {
-    let filter = lua.create_table()?;
-    filter.set("__kind", "env_file")?;
-    filter.set("path", path)?;
-    filter.set("variable", variable)?;
-
-    let filters = lua.create_table()?;
-    filters.set(1, filter)?;
-
-    let locator = lua.create_table()?;
-    locator.set("filters", filters)?;
-    Ok(locator)
-}
-
-fn files(lua: &Lua, glob: String) -> LuaResult<Table> {
-    let filter = lua.create_table()?;
-    filter.set("__kind", "file")?;
-    filter.set("glob", glob)?;
-
-    let filters = lua.create_table()?;
-    filters.set(1, filter)?;
-
-    let locator = lua.create_table()?;
-    locator.set("filters", filters)?;
-    Ok(locator)
-}
-
-fn regex(lua: &Lua, (target, pattern): (Table, String)) -> LuaResult<Table> {
-    let regex_filter = lua.create_table()?;
-    regex_filter.set("__kind", "regex")?;
-    regex_filter.set("pattern", pattern)?;
-
-    let src_filters: Table = target.get("filters")?;
-    let new_filters = lua.create_table()?;
-    for f in src_filters.sequence_values::<Table>() {
-        new_filters.set(new_filters.raw_len() + 1, f?)?;
-    }
-    new_filters.set(new_filters.raw_len() + 1, regex_filter)?;
-
-    let locator = lua.create_table()?;
-    locator.set("filters", new_filters)?;
-    Ok(locator)
-}
-
 pub fn load(lua: &Lua) -> LuaResult<()> {
-    let globals = lua.globals();
-    globals.set("__emux_env_file", lua.create_function(env_file)?)?;
-    globals.set("__emux_files", lua.create_function(files)?)?;
-    globals.set("__emux_regex", lua.create_function(regex)?)?;
-
     let emux: Table = lua.load(EMUX_LIB).set_name("emux").eval()?;
-    globals.set("emux", emux)?;
-
+    lua.globals().set("emux", emux)?;
     Ok(())
 }
 

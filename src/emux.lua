@@ -19,9 +19,18 @@
 local emux = {}
 
 emux.l = {
-    envFile = __emux_env_file,
-    files   = __emux_files,
-    regex   = __emux_regex,
+    envFile = function(path, variable)
+        return { filters = { { __kind = "env_file", path = path, variable = variable } } }
+    end,
+    files = function(glob)
+        return { filters = { { __kind = "file", glob = glob } } }
+    end,
+    regex = function(target, pattern)
+        local filters = {}
+        for _, f in ipairs(target.filters) do table.insert(filters, f) end
+        table.insert(filters, { __kind = "regex", pattern = pattern })
+        return { filters = filters }
+    end,
 }
 
 emux.o = {

@@ -23,7 +23,7 @@ enum Commands {
     },
     /// Run a Lua config file with the emux library loaded.
     Run {
-        /// Path to the Lua (.lua) config file to run.
+        /// Path to the Lua (.lua) or Fennel (.fnl) config file to run.
         file: PathBuf,
     },
     /// Show what changes would be made without applying them.

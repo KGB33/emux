@@ -49,17 +49,15 @@ pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::er
     for (name, entry) in cfg {
         let targets = entry.locate_all(dir)?;
         let ir = entry.overrider.ir_label();
-
-        // Read each file at most once across all targets
         let mut file_cache: HashMap<PathBuf, String> = HashMap::new();
-        for target in &targets {
-            if !file_cache.contains_key(&target.path) {
-                file_cache.insert(target.path.clone(), std::fs::read_to_string(&target.path)?);
-            }
-        }
 
         for target in &targets {
-            let content = &file_cache[&target.path];
+            let content = match file_cache.entry(target.path.clone()) {
+                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(std::fs::read_to_string(&target.path)?)
+                }
+            };
             let old_line = content
                 .lines()
                 .nth((target.line_number - 1) as usize)

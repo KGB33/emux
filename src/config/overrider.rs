@@ -22,6 +22,9 @@ impl Overrider {
         match self {
             Overrider::RandomPort => {
                 let port = random_port()?.to_string();
+                // Each target must have a unique (path, line_number) pair. replace_in_file
+                // reads the file fresh each iteration; two targets sharing the same line
+                // would cause the second replacement to silently no-op.
                 for t in targets {
                     replace_in_file(&t.path, t.line_number, &t.target, &port)?;
                 }
