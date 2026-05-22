@@ -1,3 +1,5 @@
+---@meta
+
 ---@class Locator A pipeline of file filters.
 ---@field filters table[]
 
@@ -12,26 +14,8 @@
 ---@field randPort Overrider Replace located values with a randomly generated free port.
 
 ---@class EmuxLib The emux API available in all config files.
----@field l EmuxLocators Locator functions for finding values in files.
----@field o EmuxOverriders Overrider values for replacing located values.
+---@field l EmuxLocators Locator functions.
+---@field o EmuxOverriders Overrider values.
 
----@type EmuxLib
-local emux = {}
-
-emux.l = {
-    envFile = function(path, variable)
-        return __emux_env_file(path, variable)
-    end,
-    files = function(glob)
-        return __emux_files(glob)
-    end,
-    regex = function(target, pattern)
-        return __emux_regex(target, pattern)
-    end,
-}
-
-emux.o = {
-    randPort = { __kind = "random_port" },
-}
-
-return emux
+---@class _G
+---@field emux EmuxLib
