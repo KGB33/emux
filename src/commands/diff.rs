@@ -1,3 +1,4 @@
+use colored::Colorize;
 use mlua::{Function, Lua, Table, Value};
 use std::{fs, path::PathBuf, process};
 
@@ -33,9 +34,9 @@ pub fn run(file: PathBuf) {
         let cfg = crate::config::cfg_from_lua(cfg_val, &lua)?;
         let entries = crate::config::diff_cfg(&cfg, &dir)?;
         for e in &entries {
-            println!("[{}] {}:{}", e.entry_name, e.path.display(), e.line_number);
-            println!("-  {}", e.old_line);
-            println!("+  {}", e.new_line);
+            println!("{}", format!("[{}] {}:{}", e.entry_name, e.path.display(), e.line_number).bold().cyan());
+            println!("-  {}", color_span(&e.old_line, &e.old_value, |s| s.red()));
+            println!("+  {}", color_span(&e.new_line, &e.new_value, |s| s.green()));
         }
         Ok(())
     })()
@@ -43,4 +44,11 @@ pub fn run(file: PathBuf) {
         eprintln!("error: {err}");
         process::exit(1);
     });
+}
+
+fn color_span(line: &str, span: &str, colorize: impl Fn(&str) -> colored::ColoredString) -> String {
+    match line.find(span) {
+        Some(pos) => format!("{}{}{}", &line[..pos], colorize(&line[pos..pos + span.len()]), &line[pos + span.len()..]),
+        None => line.to_owned(),
+    }
 }

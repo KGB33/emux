@@ -13,6 +13,8 @@ pub struct DiffEntry {
     pub line_number: u64,
     pub old_line: String,
     pub new_line: String,
+    pub old_value: String,
+    pub new_value: String,
 }
 
 use std::collections::HashMap;
@@ -49,6 +51,8 @@ pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::er
                 entry_name: name.clone(),
                 path: target.path.clone(),
                 line_number: target.line_number,
+                old_value: target.target.clone(),
+                new_value: ir.to_owned(),
                 old_line,
                 new_line,
             });
