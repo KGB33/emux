@@ -1,6 +1,6 @@
 use mlua::{Function, Lua, Result as LuaResult, Table};
 
-const EMUX_LIB: &str = include_str!("emux.lua");
+const EMUX_LIB: &str = include_str!("emux.fnl");
 const FENNEL: &str = include_str!("fennel-1.6.1.lua");
 
 pub fn compile_fennel(lua: &Lua, source: &str, name: &str) -> LuaResult<String> {
@@ -12,7 +12,8 @@ pub fn compile_fennel(lua: &Lua, source: &str, name: &str) -> LuaResult<String> 
 }
 
 pub fn load(lua: &Lua) -> LuaResult<()> {
-    let emux: Table = lua.load(EMUX_LIB).set_name("emux").eval()?;
+    let compiled = compile_fennel(lua, EMUX_LIB, "emux.fnl")?;
+    let emux: Table = lua.load(&compiled).set_name("emux").eval()?;
     lua.globals().set("emux", emux)?;
     Ok(())
 }

@@ -22,7 +22,7 @@
         inherit (pkgs) lib;
 
         craneLib = crane.mkLib pkgs;
-        luaFilter = path: _type: builtins.match ".*\\.lua$" path != null;
+        luaFilter = path: _type: builtins.match ".*\\.(lua|fnl)$" path != null;
         luaOrCargo = path: type: (luaFilter path type) || (craneLib.filterCargoSources path type);
         src = lib.cleanSourceWith {
           src = ./.;
