@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+mod lua_api;
 
 use std::path::PathBuf;
 
