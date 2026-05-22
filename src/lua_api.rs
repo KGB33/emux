@@ -90,10 +90,7 @@ mod tests {
     #[test]
     fn emux_l_files_returns_locator() {
         let lua = loaded_lua();
-        let locator: Table = lua
-            .load(r#"emux.l.files("src/**/*.rs")"#)
-            .eval()
-            .unwrap();
+        let locator: Table = lua.load(r#"emux.l.files("src/**/*.rs")"#).eval().unwrap();
         let filters: Table = locator.get("filters").unwrap();
         let filter: Table = filters.get(1).unwrap();
         let kind: String = filter.get("__kind").unwrap();

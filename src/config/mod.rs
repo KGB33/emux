@@ -7,6 +7,14 @@ mod overrider;
 pub use locator::{Locator, Target};
 pub use overrider::Overrider;
 
+pub struct DiffEntry {
+    pub entry_name: String,
+    pub path: std::path::PathBuf,
+    pub line_number: u64,
+    pub old_line: String,
+    pub new_line: String,
+}
+
 use std::collections::HashMap;
 
 use std::path::Path;
@@ -19,6 +27,34 @@ pub type Cfg = HashMap<String, ConfigEntry>;
 pub struct ConfigEntry {
     pub locate: Vec<Locator>,
     pub overrider: Overrider, // `override` is a reserved keyword
+}
+
+pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::error::Error>> {
+    let mut out = vec![];
+    for (name, entry) in cfg {
+        let mut targets = vec![];
+        for locator in &entry.locate {
+            targets.extend(locator.locate(dir)?);
+        }
+        let ir = entry.overrider.ir_label();
+        for target in &targets {
+            let content = std::fs::read_to_string(&target.path)?;
+            let old_line = content
+                .lines()
+                .nth((target.line_number - 1) as usize)
+                .unwrap_or("")
+                .to_owned();
+            let new_line = old_line.replacen(&target.target, ir, 1);
+            out.push(DiffEntry {
+                entry_name: name.clone(),
+                path: target.path.clone(),
+                line_number: target.line_number,
+                old_line,
+                new_line,
+            });
+        }
+    }
+    Ok(out)
 }
 
 pub fn apply_cfg(cfg: &Cfg, dir: &Path) -> Result<(), Box<dyn std::error::Error>> {

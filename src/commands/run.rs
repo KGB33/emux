@@ -28,7 +28,10 @@ pub fn run(file: PathBuf) {
         process::exit(1);
     });
 
-    let dir = file.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let dir = file
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
     let name = file.display().to_string();
 
     (|| -> Result<(), Box<dyn std::error::Error>> {

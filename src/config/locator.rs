@@ -68,7 +68,11 @@ impl Filter {
                 let mut searcher = SearcherBuilder::new().line_number(true).build();
                 let mut all = vec![];
                 for path in paths {
-                    let mut sink = MatchSink { path, pattern, matches: vec![] };
+                    let mut sink = MatchSink {
+                        path,
+                        pattern,
+                        matches: vec![],
+                    };
                     searcher.search_path(&matcher, path, &mut sink)?;
                     all.extend(sink.matches);
                 }
@@ -102,8 +106,16 @@ impl Locator {
                 Filter::File { .. } => paths = filter.expand(dir)?,
                 Filter::Regex { .. } => return filter.search(&paths),
                 Filter::EnvFile { path, variable } => {
-                    let abs = if path.is_absolute() { path.clone() } else { dir.join(path) };
-                    return Filter::EnvFile { path: abs, variable: variable.clone() }.search(&[]);
+                    let abs = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        dir.join(path)
+                    };
+                    return Filter::EnvFile {
+                        path: abs,
+                        variable: variable.clone(),
+                    }
+                    .search(&[]);
                 }
             }
         }
@@ -163,7 +175,9 @@ mod tests {
         let path = dir.join("config.json");
         std::fs::write(&path, "no match here\nPORT=8001\nalso no match\n").unwrap();
 
-        let filter = Filter::Regex { pattern: "PORT=8001".to_string() };
+        let filter = Filter::Regex {
+            pattern: "PORT=8001".to_string(),
+        };
         let targets = filter.search(&[path]).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].line_number, 2);
@@ -192,7 +206,10 @@ mod tests {
         let path = dir.join(".env");
         std::fs::write(&path, "HOST=localhost\nPORT=8001\nDEBUG=true\n").unwrap();
 
-        let filter = Filter::EnvFile { path: path.clone(), variable: "PORT".to_string() };
+        let filter = Filter::EnvFile {
+            path: path.clone(),
+            variable: "PORT".to_string(),
+        };
         let targets = filter.search(&[]).unwrap();
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].line_number, 2);

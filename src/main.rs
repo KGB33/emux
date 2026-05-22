@@ -26,6 +26,11 @@ enum Commands {
         /// Path to the Lua (.lua) config file to run.
         file: PathBuf,
     },
+    /// Show what changes would be made without applying them.
+    Diff {
+        /// Path to the Lua (.lua) or Fennel (.fnl) config file.
+        file: PathBuf,
+    },
 }
 
 fn main() {
@@ -34,5 +39,6 @@ fn main() {
     match cli.command {
         Commands::Verify { file } => commands::verify::run(file),
         Commands::Run { file } => commands::run::run(file),
+        Commands::Diff { file } => commands::diff::run(file),
     }
 }

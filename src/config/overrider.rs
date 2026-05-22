@@ -12,6 +12,12 @@ pub enum Overrider {
 }
 
 impl Overrider {
+    pub fn ir_label(&self) -> &'static str {
+        match self {
+            Overrider::RandomPort => "<random_port>",
+        }
+    }
+
     pub fn apply(&self, targets: &[Target]) -> Result<(), Box<dyn std::error::Error>> {
         match self {
             Overrider::RandomPort => {
@@ -30,17 +36,30 @@ fn random_port() -> Result<u16, std::io::Error> {
     Ok(l.local_addr()?.port())
 }
 
-fn replace_in_file(path: &Path, line_number: u64, old: &str, new: &str) -> Result<(), std::io::Error> {
+fn replace_in_file(
+    path: &Path,
+    line_number: u64,
+    old: &str,
+    new: &str,
+) -> Result<(), std::io::Error> {
     let content = std::fs::read_to_string(path)?;
     let updated: String = content
         .lines()
         .enumerate()
         .map(|(i, line)| {
-            if (i + 1) as u64 == line_number { line.replacen(old, new, 1) } else { line.to_owned() }
+            if (i + 1) as u64 == line_number {
+                line.replacen(old, new, 1)
+            } else {
+                line.to_owned()
+            }
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let updated = if content.ends_with('\n') { updated + "\n" } else { updated };
+    let updated = if content.ends_with('\n') {
+        updated + "\n"
+    } else {
+        updated
+    };
     std::fs::write(path, updated)
 }
 
@@ -70,7 +89,11 @@ mod tests {
         let path = dir.join(".env");
         std::fs::write(&path, "HOST=localhost\nPORT=8001\nDEBUG=true\n").unwrap();
 
-        let targets = vec![Target { path: path.clone(), line_number: 2, target: "8001".to_owned() }];
+        let targets = vec![Target {
+            path: path.clone(),
+            line_number: 2,
+            target: "8001".to_owned(),
+        }];
         Overrider::RandomPort.apply(&targets).unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
