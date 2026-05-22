@@ -13,26 +13,27 @@ pub struct Locator {
     pub filters: Vec<Filter>,
 }
 
-/// A line matched by a `Regex` filter.
+/// A located line — the exact substring an overrider should find and replace.
 #[derive(Debug)]
-pub struct Match {
+pub struct Target {
     pub path: PathBuf,
     pub line_number: u64,
-    pub line: String,
+    pub target: String,
 }
 
 struct MatchSink<'p> {
     path: &'p Path,
-    matches: Vec<Match>,
+    pattern: &'p str,
+    matches: Vec<Target>,
 }
 
 impl Sink for MatchSink<'_> {
     type Error = std::io::Error;
     fn matched(&mut self, _: &Searcher, m: &SinkMatch) -> Result<bool, Self::Error> {
-        self.matches.push(Match {
+        self.matches.push(Target {
             path: self.path.to_owned(),
             line_number: m.line_number().unwrap_or(0),
-            line: String::from_utf8_lossy(m.bytes()).into_owned(),
+            target: self.pattern.to_owned(),
         });
         Ok(true)
     }
@@ -60,14 +61,14 @@ impl Filter {
         }
     }
 
-    pub fn search(&self, paths: &[PathBuf]) -> Result<Vec<Match>, Box<dyn std::error::Error>> {
+    pub fn search(&self, paths: &[PathBuf]) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
         match self {
             Filter::Regex { pattern } => {
                 let matcher = RegexMatcher::new(pattern)?;
                 let mut searcher = SearcherBuilder::new().line_number(true).build();
                 let mut all = vec![];
                 for path in paths {
-                    let mut sink = MatchSink { path, matches: vec![] };
+                    let mut sink = MatchSink { path, pattern, matches: vec![] };
                     searcher.search_path(&matcher, path, &mut sink)?;
                     all.extend(sink.matches);
                 }
@@ -76,20 +77,37 @@ impl Filter {
             Filter::EnvFile { path, variable } => {
                 let content = std::fs::read_to_string(path)?;
                 let prefix = format!("{variable}=");
-                let matches = content
+                let targets = content
                     .lines()
                     .enumerate()
                     .filter(|(_, line)| line.starts_with(&prefix))
-                    .map(|(i, line)| Match {
+                    .map(|(i, line)| Target {
                         path: path.clone(),
                         line_number: (i + 1) as u64,
-                        line: line.to_owned(),
+                        target: line[prefix.len()..].to_owned(),
                     })
                     .collect();
-                Ok(matches)
+                Ok(targets)
             }
             _ => Ok(vec![]),
         }
+    }
+}
+
+impl Locator {
+    pub fn locate(&self, dir: &Path) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+        let mut paths: Vec<PathBuf> = vec![];
+        for filter in &self.filters {
+            match filter {
+                Filter::File { .. } => paths = filter.expand(dir)?,
+                Filter::Regex { .. } => return filter.search(&paths),
+                Filter::EnvFile { path, variable } => {
+                    let abs = if path.is_absolute() { path.clone() } else { dir.join(path) };
+                    return Filter::EnvFile { path: abs, variable: variable.clone() }.search(&[]);
+                }
+            }
+        }
+        Ok(vec![])
     }
 }
 
@@ -145,13 +163,11 @@ mod tests {
         let path = dir.join("config.json");
         std::fs::write(&path, "no match here\nPORT=8001\nalso no match\n").unwrap();
 
-        let filter = Filter::Regex {
-            pattern: "PORT=8001".to_string(),
-        };
-        let matches = filter.search(&[path]).unwrap();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].line_number, 2);
-        assert!(matches[0].line.contains("PORT=8001"));
+        let filter = Filter::Regex { pattern: "PORT=8001".to_string() };
+        let targets = filter.search(&[path]).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].line_number, 2);
+        assert_eq!(targets[0].target, "PORT=8001");
     }
 
     #[test]
@@ -177,10 +193,10 @@ mod tests {
         std::fs::write(&path, "HOST=localhost\nPORT=8001\nDEBUG=true\n").unwrap();
 
         let filter = Filter::EnvFile { path: path.clone(), variable: "PORT".to_string() };
-        let matches = filter.search(&[]).unwrap();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].line_number, 2);
-        assert_eq!(matches[0].line, "PORT=8001");
+        let targets = filter.search(&[]).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].line_number, 2);
+        assert_eq!(targets[0].target, "8001");
     }
 
     #[test]

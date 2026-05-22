@@ -3,10 +3,13 @@
 mod locator;
 mod overrider;
 
-pub use locator::Locator;
+#[allow(unused_imports)]
+pub use locator::{Locator, Target};
 pub use overrider::Overrider;
 
 use std::collections::HashMap;
+
+use std::path::Path;
 
 use mlua::{FromLua, Lua, Result as LuaResult, Table, Value};
 
@@ -16,6 +19,17 @@ pub type Cfg = HashMap<String, ConfigEntry>;
 pub struct ConfigEntry {
     pub locate: Vec<Locator>,
     pub overrider: Overrider, // `override` is a reserved keyword
+}
+
+pub fn apply_cfg(cfg: &Cfg, dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in cfg.values() {
+        let mut targets = vec![];
+        for locator in &entry.locate {
+            targets.extend(locator.locate(dir)?);
+        }
+        entry.overrider.apply(&targets)?;
+    }
+    Ok(())
 }
 
 /// Deserialize a `Cfg` from the value returned by evaluating a config file.
