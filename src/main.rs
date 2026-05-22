@@ -21,6 +21,11 @@ enum Commands {
         /// Path to the Lua (.lua) or Fennel (.fnl) file to verify.
         file: PathBuf,
     },
+    /// Run a Lua config file with the emux library loaded.
+    Run {
+        /// Path to the Lua (.lua) config file to run.
+        file: PathBuf,
+    },
 }
 
 fn main() {
@@ -28,5 +33,6 @@ fn main() {
 
     match cli.command {
         Commands::Verify { file } => commands::verify::run(file),
+        Commands::Run { file } => commands::run::run(file),
     }
 }
