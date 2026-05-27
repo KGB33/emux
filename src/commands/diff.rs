@@ -7,12 +7,11 @@ pub fn run(file: PathBuf) {
         .and_then(|cfg| crate::config::diff_cfg(&cfg, &dir))
         .map(|entries| {
             for e in &entries {
-                println!(
-                    "{}",
-                    format!("[{}] {}:{}", e.entry_name, e.path.display(), e.line_number)
-                        .bold()
-                        .cyan()
-                );
+                let loc = match e.line_number {
+                    Some(n) => format!("{}:{n}", e.path.display()),
+                    None => e.path.display().to_string(),
+                };
+                println!("{}", format!("[{}] {loc}", e.entry_name).bold().cyan());
                 println!("-  {}", color_span(&e.old_line, &e.old_value, |s| s.red()));
                 println!(
                     "+  {}",

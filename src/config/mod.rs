@@ -21,7 +21,7 @@ pub struct ConfigEntry {
 pub struct DiffEntry {
     pub entry_name: String,
     pub path: PathBuf,
-    pub line_number: u64,
+    pub line_number: Option<u64>,
     pub old_line: String,
     pub new_line: String,
     pub old_value: String,

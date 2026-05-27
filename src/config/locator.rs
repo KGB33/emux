@@ -8,7 +8,31 @@ use mlua::{FromLua, Lua, Result as LuaResult, Value};
 
 use super::expect_table;
 
-type ApplyFn = Box<dyn Fn(&str) -> Result<(), Box<dyn std::error::Error>>>;
+#[derive(Debug, Clone)]
+enum Writer {
+    InFileLine { line_number: u64 },
+    JsonSelector { selector: String },
+}
+
+impl Writer {
+    fn apply(
+        &self,
+        path: &Path,
+        old_value: &str,
+        new_val: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            Writer::InFileLine { line_number } => {
+                replace_in_file(path, *line_number, old_value, new_val).map_err(Into::into)
+            }
+            Writer::JsonSelector { selector } => {
+                let json_new = serde_json::from_str(new_val)
+                    .unwrap_or_else(|_| serde_json::Value::String(new_val.to_owned()));
+                replace_json_value(path, selector, json_new)
+            }
+        }
+    }
+}
 
 /// A pipeline of filters that narrows scope from the whole repo to specific locations.
 #[derive(Debug)]
@@ -16,46 +40,35 @@ pub struct Locator {
     pub filters: Vec<Filter>,
 }
 
-/// A located target bundling write metadata with a closure that applies a new value.
+/// A located target bundling display metadata with a write strategy.
+#[derive(Debug, Clone)]
 pub struct Applicator {
     pub path: PathBuf,
-    pub line_number: u64,
+    pub line_number: Option<u64>,
     pub old_value: String,
     pub old_line: String,
-    apply: ApplyFn,
-}
-
-impl std::fmt::Debug for Applicator {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Applicator")
-            .field("path", &self.path)
-            .field("line_number", &self.line_number)
-            .field("old_value", &self.old_value)
-            .field("old_line", &self.old_line)
-            .field("apply", &"<fn>")
-            .finish()
-    }
+    writer: Writer,
 }
 
 impl Applicator {
-    pub fn new(
+    fn new(
         path: PathBuf,
-        line_number: u64,
+        line_number: Option<u64>,
         old_value: String,
         old_line: String,
-        apply: ApplyFn,
+        writer: Writer,
     ) -> Self {
         Self {
             path,
             line_number,
             old_value,
             old_line,
-            apply,
+            writer,
         }
     }
 
-    pub fn call(&self, value: &str) -> Result<(), Box<dyn std::error::Error>> {
-        (self.apply)(value)
+    pub fn apply(&self, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+        self.writer.apply(&self.path, &self.old_value, value)
     }
 }
 
@@ -126,18 +139,13 @@ fn search_regex(
                     .unwrap_or("")
                     .trim_end_matches(['\n', '\r'])
                     .to_owned();
-                let path = self.path.to_owned();
                 let line_number = m.line_number().unwrap_or(0);
-                let old_value_clone = old_value.clone();
                 self.matches.push(Applicator::new(
-                    path.clone(),
-                    line_number,
+                    self.path.to_owned(),
+                    Some(line_number),
                     old_value,
                     old_line,
-                    Box::new(move |new_val| {
-                        replace_in_file(&path, line_number, &old_value_clone, new_val)
-                            .map_err(Into::into)
-                    }),
+                    Writer::InFileLine { line_number },
                 ));
             }
             Ok(true)
@@ -173,17 +181,12 @@ fn search_env_file(
             let old_value = line[prefix.len()..].to_owned();
             let old_line = line.to_owned();
             let line_number = (i + 1) as u64;
-            let path_clone = path.to_owned();
-            let old_val_clone = old_value.clone();
             Applicator::new(
                 path.to_owned(),
-                line_number,
+                Some(line_number),
                 old_value,
                 old_line,
-                Box::new(move |new_val| {
-                    replace_in_file(&path_clone, line_number, &old_val_clone, new_val)
-                        .map_err(Into::into)
-                }),
+                Writer::InFileLine { line_number },
             )
         })
         .collect();
@@ -204,28 +207,15 @@ fn search_json_file(
             .ok_or_else(|| format!("key `{k}` not found in `{selector}`"))?;
     }
     let old_value = v.to_string();
-    let last_key = keys.last().unwrap();
-    let search = format!("\"{}\":", last_key);
-    let (line_number, old_line) = content
-        .lines()
-        .enumerate()
-        .find(|(_, l)| l.contains(&search) && l.contains(old_value.as_str()))
-        .map(|(i, l)| ((i + 1) as u64, l.to_owned()))
-        .unwrap_or((0, String::new()));
-
-    let path_clone = path.to_owned();
-    let selector_clone = selector.to_owned();
+    let old_line = format!("{selector}: {old_value}");
     Ok(vec![Applicator::new(
         path.to_owned(),
-        line_number,
+        None,
         old_value,
         old_line,
-        Box::new(move |new_val| {
-            // Parse new_val as JSON (e.g. "54321" → Number) so native JSON types are preserved.
-            let json_new: serde_json::Value = serde_json::from_str(new_val)
-                .unwrap_or_else(|_| serde_json::Value::String(new_val.to_owned()));
-            replace_json_value(&path_clone, &selector_clone, json_new)
-        }),
+        Writer::JsonSelector {
+            selector: selector.to_owned(),
+        },
     )])
 }
 
@@ -277,7 +267,7 @@ fn replace_json_value(
     Ok(())
 }
 
-pub(super) fn split_selector(selector: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn split_selector(selector: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let keys: Vec<String> = selector
         .trim_start_matches('.')
         .split('.')
@@ -358,7 +348,7 @@ mod tests {
         };
         let applicators = locator.locate(&dir).unwrap();
         assert_eq!(applicators.len(), 1);
-        assert_eq!(applicators[0].line_number, 2);
+        assert_eq!(applicators[0].line_number, Some(2));
         assert_eq!(applicators[0].old_value, "PORT=8001");
     }
 
@@ -399,7 +389,7 @@ mod tests {
         };
         let applicators = locator.locate(&dir).unwrap();
         assert_eq!(applicators.len(), 1);
-        assert_eq!(applicators[0].line_number, 2);
+        assert_eq!(applicators[0].line_number, Some(2));
         assert_eq!(applicators[0].old_value, "8001");
     }
 
@@ -417,7 +407,7 @@ mod tests {
             }],
         };
         let applicators = locator.locate(&dir).unwrap();
-        applicators[0].call("9999").unwrap();
+        applicators[0].apply("9999").unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("PORT=9999"), "PORT should be rewritten");
@@ -443,6 +433,7 @@ mod tests {
         let applicators = locator.locate(&dir).unwrap();
         assert_eq!(applicators.len(), 1);
         assert_eq!(applicators[0].old_value, "8001");
+        assert_eq!(applicators[0].line_number, None);
     }
 
     #[test]
@@ -459,7 +450,7 @@ mod tests {
             }],
         };
         let applicators = locator.locate(&dir).unwrap();
-        applicators[0].call("9999").unwrap();
+        applicators[0].apply("9999").unwrap();
 
         let content = std::fs::read_to_string(&path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();

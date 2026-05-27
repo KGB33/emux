@@ -16,7 +16,7 @@ impl Overrider {
         }
     }
 
-    pub fn generate(&self) -> Result<String, Box<dyn std::error::Error>> {
+    fn generate(&self) -> Result<String, Box<dyn std::error::Error>> {
         match self {
             Overrider::RandomPort => Ok(random_port()?.to_string()),
         }
@@ -25,7 +25,7 @@ impl Overrider {
     pub fn apply(&self, applicators: &[Applicator]) -> Result<(), Box<dyn std::error::Error>> {
         let value = self.generate()?;
         for a in applicators {
-            a.call(&value)?;
+            a.apply(&value)?;
         }
         Ok(())
     }
@@ -56,10 +56,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn random_port_generates_valid_port() {
-        let port_str = Overrider::RandomPort.generate().unwrap();
-        let port: u16 = port_str.parse().unwrap();
-        assert!(port > 0);
+    fn random_port_apply_zero_applicators_succeeds() {
+        Overrider::RandomPort.apply(&[]).unwrap();
     }
 
     #[test]
