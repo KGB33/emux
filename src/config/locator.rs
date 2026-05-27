@@ -8,30 +8,54 @@ use mlua::{FromLua, Lua, Result as LuaResult, Value};
 
 use super::expect_table;
 
+type ApplyFn = Box<dyn Fn(&str) -> Result<(), Box<dyn std::error::Error>>>;
+
 /// A pipeline of filters that narrows scope from the whole repo to specific locations.
 #[derive(Debug)]
 pub struct Locator {
     pub filters: Vec<Filter>,
 }
 
-/// A located value — what an overrider should update.
-#[derive(Debug)]
-pub enum Target {
-    /// A substring on a specific line; overrider replaces it with text.
-    Line {
-        path: PathBuf,
-        line_number: u64,
-        target: String,
-    },
-    /// A value at a JSON selector path; overrider updates it natively.
-    Json { path: PathBuf, selector: String },
+/// A located target bundling write metadata with a closure that applies a new value.
+pub struct Applicator {
+    pub path: PathBuf,
+    pub line_number: u64,
+    pub old_value: String,
+    pub old_line: String,
+    apply: ApplyFn,
 }
 
-impl Target {
-    pub fn path(&self) -> &Path {
-        match self {
-            Self::Line { path, .. } | Self::Json { path, .. } => path,
+impl std::fmt::Debug for Applicator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Applicator")
+            .field("path", &self.path)
+            .field("line_number", &self.line_number)
+            .field("old_value", &self.old_value)
+            .field("old_line", &self.old_line)
+            .field("apply", &"<fn>")
+            .finish()
+    }
+}
+
+impl Applicator {
+    pub fn new(
+        path: PathBuf,
+        line_number: u64,
+        old_value: String,
+        old_line: String,
+        apply: ApplyFn,
+    ) -> Self {
+        Self {
+            path,
+            line_number,
+            old_value,
+            old_line,
+            apply,
         }
+    }
+
+    pub fn call(&self, value: &str) -> Result<(), Box<dyn std::error::Error>> {
+        (self.apply)(value)
     }
 }
 
@@ -49,7 +73,7 @@ pub enum Filter {
 }
 
 impl Locator {
-    pub fn locate(&self, dir: &Path) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+    pub fn locate(&self, dir: &Path) -> Result<Vec<Applicator>, Box<dyn std::error::Error>> {
         let mut paths: Vec<PathBuf> = vec![];
         for filter in &self.filters {
             match filter {
@@ -83,26 +107,38 @@ impl Locator {
 fn search_regex(
     pattern: &str,
     paths: &[PathBuf],
-) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+) -> Result<Vec<Applicator>, Box<dyn std::error::Error>> {
     struct MatchSink<'a> {
         path: &'a Path,
         matcher: &'a RegexMatcher,
-        matches: Vec<Target>,
+        matches: Vec<Applicator>,
     }
 
     impl Sink for MatchSink<'_> {
         type Error = std::io::Error;
         fn matched(&mut self, _: &Searcher, m: &SinkMatch) -> Result<bool, Self::Error> {
-            let line = m.bytes();
-            if let Ok(Some(mat)) = self.matcher.find(line) {
-                let matched_text = std::str::from_utf8(&line[mat.start()..mat.end()])
+            let line_bytes = m.bytes();
+            if let Ok(Some(mat)) = self.matcher.find(line_bytes) {
+                let old_value = std::str::from_utf8(&line_bytes[mat.start()..mat.end()])
                     .unwrap_or("")
                     .to_owned();
-                self.matches.push(Target::Line {
-                    path: self.path.to_owned(),
-                    line_number: m.line_number().unwrap_or(0),
-                    target: matched_text,
-                });
+                let old_line = std::str::from_utf8(line_bytes)
+                    .unwrap_or("")
+                    .trim_end_matches(['\n', '\r'])
+                    .to_owned();
+                let path = self.path.to_owned();
+                let line_number = m.line_number().unwrap_or(0);
+                let old_value_clone = old_value.clone();
+                self.matches.push(Applicator::new(
+                    path.clone(),
+                    line_number,
+                    old_value,
+                    old_line,
+                    Box::new(move |new_val| {
+                        replace_in_file(&path, line_number, &old_value_clone, new_val)
+                            .map_err(Into::into)
+                    }),
+                ));
             }
             Ok(true)
         }
@@ -123,26 +159,41 @@ fn search_regex(
     Ok(all)
 }
 
-fn search_env_file(path: &Path, variable: &str) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+fn search_env_file(
+    path: &Path,
+    variable: &str,
+) -> Result<Vec<Applicator>, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let prefix = format!("{variable}=");
-    let targets = content
+    let applicators = content
         .lines()
         .enumerate()
         .filter(|(_, line)| line.starts_with(&prefix))
-        .map(|(i, line)| Target::Line {
-            path: path.to_owned(),
-            line_number: (i + 1) as u64,
-            target: line[prefix.len()..].to_owned(),
+        .map(|(i, line)| {
+            let old_value = line[prefix.len()..].to_owned();
+            let old_line = line.to_owned();
+            let line_number = (i + 1) as u64;
+            let path_clone = path.to_owned();
+            let old_val_clone = old_value.clone();
+            Applicator::new(
+                path.to_owned(),
+                line_number,
+                old_value,
+                old_line,
+                Box::new(move |new_val| {
+                    replace_in_file(&path_clone, line_number, &old_val_clone, new_val)
+                        .map_err(Into::into)
+                }),
+            )
         })
         .collect();
-    Ok(targets)
+    Ok(applicators)
 }
 
 fn search_json_file(
     path: &Path,
     selector: &str,
-) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+) -> Result<Vec<Applicator>, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
     let json: serde_json::Value = serde_json::from_str(&content)?;
     let keys = split_selector(selector)?;
@@ -152,10 +203,78 @@ fn search_json_file(
             .get(k.as_str())
             .ok_or_else(|| format!("key `{k}` not found in `{selector}`"))?;
     }
-    Ok(vec![Target::Json {
-        path: path.to_owned(),
-        selector: selector.to_owned(),
-    }])
+    let old_value = v.to_string();
+    let last_key = keys.last().unwrap();
+    let search = format!("\"{}\":", last_key);
+    let (line_number, old_line) = content
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains(&search) && l.contains(old_value.as_str()))
+        .map(|(i, l)| ((i + 1) as u64, l.to_owned()))
+        .unwrap_or((0, String::new()));
+
+    let path_clone = path.to_owned();
+    let selector_clone = selector.to_owned();
+    Ok(vec![Applicator::new(
+        path.to_owned(),
+        line_number,
+        old_value,
+        old_line,
+        Box::new(move |new_val| {
+            // Parse new_val as JSON (e.g. "54321" → Number) so native JSON types are preserved.
+            let json_new: serde_json::Value = serde_json::from_str(new_val)
+                .unwrap_or_else(|_| serde_json::Value::String(new_val.to_owned()));
+            replace_json_value(&path_clone, &selector_clone, json_new)
+        }),
+    )])
+}
+
+fn replace_in_file(
+    path: &Path,
+    line_number: u64,
+    old: &str,
+    new: &str,
+) -> Result<(), std::io::Error> {
+    let content = std::fs::read_to_string(path)?;
+    let result: String = content
+        .split_inclusive('\n')
+        .enumerate()
+        .map(|(i, line)| {
+            if (i + 1) as u64 != line_number {
+                return line.to_owned();
+            }
+            let ending = if line.ends_with("\r\n") {
+                "\r\n"
+            } else if line.ends_with('\n') {
+                "\n"
+            } else {
+                ""
+            };
+            let body = &line[..line.len() - ending.len()];
+            format!("{}{ending}", body.replacen(old, new, 1))
+        })
+        .collect();
+    std::fs::write(path, result)
+}
+
+fn replace_json_value(
+    path: &Path,
+    selector: &str,
+    new_value: serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)?;
+    let keys = split_selector(selector)?;
+    let (parents, last) = keys.split_at(keys.len() - 1);
+    let mut cur = &mut json;
+    for k in parents {
+        cur = cur
+            .get_mut(k.as_str())
+            .ok_or_else(|| format!("key `{k}` not found"))?;
+    }
+    cur[last[0].as_str()] = new_value;
+    std::fs::write(path, serde_json::to_string_pretty(&json)? + "\n")?;
+    Ok(())
 }
 
 pub(super) fn split_selector(selector: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -237,11 +356,10 @@ mod tests {
                 },
             ],
         };
-        let targets = locator.locate(&dir).unwrap();
-        assert_eq!(targets.len(), 1);
-        assert!(
-            matches!(&targets[0], Target::Line { line_number: 2, target, .. } if target == "PORT=8001")
-        );
+        let applicators = locator.locate(&dir).unwrap();
+        assert_eq!(applicators.len(), 1);
+        assert_eq!(applicators[0].line_number, 2);
+        assert_eq!(applicators[0].old_value, "PORT=8001");
     }
 
     #[test]
@@ -261,9 +379,9 @@ mod tests {
                 },
             ],
         };
-        let targets = locator.locate(&dir).unwrap();
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].path(), dir.join("config.json"));
+        let applicators = locator.locate(&dir).unwrap();
+        assert_eq!(applicators.len(), 1);
+        assert_eq!(applicators[0].path, dir.join("config.json"));
     }
 
     #[test]
@@ -279,15 +397,34 @@ mod tests {
                 variable: "PORT".to_string(),
             }],
         };
-        let targets = locator.locate(&dir).unwrap();
-        assert_eq!(targets.len(), 1);
-        assert!(
-            matches!(&targets[0], Target::Line { line_number: 2, target, .. } if target == "8001")
-        );
+        let applicators = locator.locate(&dir).unwrap();
+        assert_eq!(applicators.len(), 1);
+        assert_eq!(applicators[0].line_number, 2);
+        assert_eq!(applicators[0].old_value, "8001");
     }
 
     #[test]
-    fn locate_json_file_returns_json_target() {
+    fn locate_env_file_applicator_rewrites_file() {
+        let dir = std::env::temp_dir().join("emux_test_envfile_apply");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env");
+        std::fs::write(&path, "HOST=localhost\nPORT=8001\nDEBUG=true\n").unwrap();
+
+        let locator = Locator {
+            filters: vec![Filter::EnvFile {
+                path: path.clone(),
+                variable: "PORT".to_string(),
+            }],
+        };
+        let applicators = locator.locate(&dir).unwrap();
+        applicators[0].call("9999").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("PORT=9999"), "PORT should be rewritten");
+    }
+
+    #[test]
+    fn locate_json_file_returns_applicator() {
         let dir = std::env::temp_dir().join("emux_test_jsonfile_flat");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
@@ -303,9 +440,30 @@ mod tests {
                 selector: ".port".to_string(),
             }],
         };
-        let targets = locator.locate(&dir).unwrap();
-        assert_eq!(targets.len(), 1);
-        assert!(matches!(&targets[0], Target::Json { selector, .. } if selector == ".port"));
+        let applicators = locator.locate(&dir).unwrap();
+        assert_eq!(applicators.len(), 1);
+        assert_eq!(applicators[0].old_value, "8001");
+    }
+
+    #[test]
+    fn locate_json_file_applicator_rewrites_file() {
+        let dir = std::env::temp_dir().join("emux_test_jsonfile_apply");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{\n  \"port\": 8001\n}\n").unwrap();
+
+        let locator = Locator {
+            filters: vec![Filter::JsonFile {
+                path: path.clone(),
+                selector: ".port".to_string(),
+            }],
+        };
+        let applicators = locator.locate(&dir).unwrap();
+        applicators[0].call("9999").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(json["port"].as_u64().unwrap(), 9999);
     }
 
     #[test]
@@ -321,9 +479,9 @@ mod tests {
                 selector: ".server.port".to_string(),
             }],
         };
-        let targets = locator.locate(&dir).unwrap();
-        assert_eq!(targets.len(), 1);
-        assert!(matches!(&targets[0], Target::Json { selector, .. } if selector == ".server.port"));
+        let applicators = locator.locate(&dir).unwrap();
+        assert_eq!(applicators.len(), 1);
+        assert_eq!(applicators[0].old_value, "9000");
     }
 
     #[test]
@@ -340,6 +498,44 @@ mod tests {
             }],
         };
         assert!(locator.locate(&dir).is_err());
+    }
+
+    #[test]
+    fn replace_in_file_preserves_crlf_endings() {
+        let dir = std::env::temp_dir().join("emux_test_locator_crlf");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env_crlf");
+        std::fs::write(&path, "HOST=localhost\r\nPORT=8001\r\nDEBUG=true\r\n").unwrap();
+
+        replace_in_file(&path, 2, "8001", "9999").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("PORT=9999\r\n"),
+            "CRLF ending must be preserved"
+        );
+        assert_eq!(
+            content.matches("\r\n").count(),
+            3,
+            "all three CRLF endings must survive"
+        );
+    }
+
+    #[test]
+    fn replace_in_file_preserves_multiple_trailing_newlines() {
+        let dir = std::env::temp_dir().join("emux_test_locator_trailing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".env_trailing");
+        std::fs::write(&path, "HOST=localhost\nPORT=8001\nDEBUG=true\n\n").unwrap();
+
+        replace_in_file(&path, 2, "8001", "9999").unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.ends_with("\n\n"),
+            "double trailing newline must be preserved"
+        );
+        assert!(content.contains("PORT=9999"));
     }
 
     #[test]

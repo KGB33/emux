@@ -1,8 +1,8 @@
 mod locator;
 mod overrider;
 
+use locator::Applicator;
 pub use locator::Locator;
-use locator::{Target, split_selector};
 pub use overrider::Overrider;
 
 use std::collections::HashMap;
@@ -47,71 +47,19 @@ pub fn load_config_file(file: &Path) -> Result<Cfg, Box<dyn std::error::Error>> 
 pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::error::Error>> {
     let mut out = vec![];
     for (name, entry) in cfg {
-        let targets = entry.locate_all(dir)?;
+        let applicators = entry.locate_all(dir)?;
         let ir = entry.overrider.ir_label();
-        let mut file_cache: HashMap<PathBuf, String> = HashMap::new();
-
-        for target in &targets {
-            let content = match file_cache.entry(target.path().to_owned()) {
-                std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(std::fs::read_to_string(target.path())?)
-                }
-            };
-
-            let diff_entry = match target {
-                Target::Line {
-                    path,
-                    line_number,
-                    target,
-                } => {
-                    let old_line = content
-                        .lines()
-                        .nth((line_number - 1) as usize)
-                        .unwrap_or("")
-                        .to_owned();
-                    let new_line = old_line.replacen(target, ir, 1);
-                    DiffEntry {
-                        entry_name: name.clone(),
-                        path: path.clone(),
-                        line_number: *line_number,
-                        old_value: target.clone(),
-                        new_value: ir.to_owned(),
-                        old_line,
-                        new_line,
-                    }
-                }
-                Target::Json { path, selector } => {
-                    let json: serde_json::Value = serde_json::from_str(content)?;
-                    let keys = split_selector(selector)?;
-                    let mut v = &json;
-                    for k in &keys {
-                        v = v
-                            .get(k.as_str())
-                            .ok_or_else(|| format!("key `{k}` not found in `{selector}`"))?;
-                    }
-                    let old_value = v.to_string();
-                    let last_key = keys.last().unwrap();
-                    let search = format!("\"{}\":", last_key);
-                    let (line_number, old_line) = content
-                        .lines()
-                        .enumerate()
-                        .find(|(_, l)| l.contains(&search) && l.contains(old_value.as_str()))
-                        .map(|(i, l)| ((i + 1) as u64, l.to_owned()))
-                        .unwrap_or((0, String::new()));
-                    let new_line = old_line.replacen(&old_value, ir, 1);
-                    DiffEntry {
-                        entry_name: name.clone(),
-                        path: path.clone(),
-                        line_number,
-                        old_value,
-                        new_value: ir.to_owned(),
-                        old_line,
-                        new_line,
-                    }
-                }
-            };
-            out.push(diff_entry);
+        for a in &applicators {
+            let new_line = a.old_line.replacen(&a.old_value, ir, 1);
+            out.push(DiffEntry {
+                entry_name: name.clone(),
+                path: a.path.clone(),
+                line_number: a.line_number,
+                old_value: a.old_value.clone(),
+                new_value: ir.to_owned(),
+                old_line: a.old_line.clone(),
+                new_line,
+            });
         }
     }
     Ok(out)
@@ -136,12 +84,12 @@ pub fn cfg_from_lua(value: Value, lua: &Lua) -> LuaResult<Cfg> {
 }
 
 impl ConfigEntry {
-    fn locate_all(&self, dir: &Path) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
-        let mut targets = vec![];
+    fn locate_all(&self, dir: &Path) -> Result<Vec<Applicator>, Box<dyn std::error::Error>> {
+        let mut applicators = vec![];
         for locator in &self.locate {
-            targets.extend(locator.locate(dir)?);
+            applicators.extend(locator.locate(dir)?);
         }
-        Ok(targets)
+        Ok(applicators)
     }
 }
 
