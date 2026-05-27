@@ -3,7 +3,7 @@ use std::path::Path;
 use mlua::{FromLua, Lua, Result as LuaResult, Value};
 
 use super::expect_table;
-use super::locator::Target;
+use super::locator::{Target, split_selector};
 
 #[derive(Debug)]
 pub enum Overrider {
@@ -21,12 +21,20 @@ impl Overrider {
     pub fn apply(&self, targets: &[Target]) -> Result<(), Box<dyn std::error::Error>> {
         match self {
             Overrider::RandomPort => {
-                let port = random_port()?.to_string();
-                // Each target must have a unique (path, line_number) pair. replace_in_file
-                // reads the file fresh each iteration; two targets sharing the same line
-                // would cause the second replacement to silently no-op.
+                let port = random_port()?;
                 for t in targets {
-                    replace_in_file(&t.path, t.line_number, &t.target, &port)?;
+                    match t {
+                        Target::Line {
+                            path,
+                            line_number,
+                            target,
+                        } => {
+                            replace_in_file(path, *line_number, target, &port.to_string())?;
+                        }
+                        Target::Json { path, selector } => {
+                            replace_json_value(path, selector, serde_json::json!(port))?;
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -67,6 +75,26 @@ fn replace_in_file(
     std::fs::write(path, result)
 }
 
+fn replace_json_value(
+    path: &Path,
+    selector: &str,
+    new_value: serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let mut json: serde_json::Value = serde_json::from_str(&content)?;
+    let keys = split_selector(selector)?;
+    let (parents, last) = keys.split_at(keys.len() - 1);
+    let mut cur = &mut json;
+    for k in parents {
+        cur = cur
+            .get_mut(k.as_str())
+            .ok_or_else(|| format!("key `{k}` not found"))?;
+    }
+    cur[last[0].as_str()] = new_value;
+    std::fs::write(path, serde_json::to_string_pretty(&json)? + "\n")?;
+    Ok(())
+}
+
 impl FromLua for Overrider {
     fn from_lua(value: Value, _lua: &Lua) -> LuaResult<Self> {
         let table = expect_table(value, "Overrider")?;
@@ -93,7 +121,7 @@ mod tests {
         let path = dir.join(".env");
         std::fs::write(&path, "HOST=localhost\nPORT=8001\nDEBUG=true\n").unwrap();
 
-        let targets = vec![Target {
+        let targets = vec![Target::Line {
             path: path.clone(),
             line_number: 2,
             target: "8001".to_owned(),
@@ -105,6 +133,26 @@ mod tests {
         assert!(port_line.starts_with("PORT="));
         let new_val: u16 = port_line["PORT=".len()..].parse().unwrap();
         assert_ne!(new_val, 8001);
+    }
+
+    #[test]
+    fn random_port_apply_rewrites_json_file() {
+        let dir = std::env::temp_dir().join("emux_test_overrider_json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{\n  \"server\": {\n    \"port\": 8001\n  }\n}\n").unwrap();
+
+        let targets = vec![Target::Json {
+            path: path.clone(),
+            selector: ".server.port".to_owned(),
+        }];
+        Overrider::RandomPort.apply(&targets).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let new_val = json["server"]["port"].as_u64().unwrap();
+        assert_ne!(new_val, 8001);
+        assert!(new_val > 0 && new_val <= 65535);
     }
 
     #[test]

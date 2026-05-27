@@ -2,7 +2,7 @@ mod locator;
 mod overrider;
 
 pub use locator::Locator;
-use locator::Target;
+use locator::{Target, split_selector};
 pub use overrider::Overrider;
 
 use std::collections::HashMap;
@@ -52,27 +52,66 @@ pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::er
         let mut file_cache: HashMap<PathBuf, String> = HashMap::new();
 
         for target in &targets {
-            let content = match file_cache.entry(target.path.clone()) {
+            let content = match file_cache.entry(target.path().to_owned()) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(std::fs::read_to_string(&target.path)?)
+                    e.insert(std::fs::read_to_string(target.path())?)
                 }
             };
-            let old_line = content
-                .lines()
-                .nth((target.line_number - 1) as usize)
-                .unwrap_or("")
-                .to_owned();
-            let new_line = old_line.replacen(&target.target, ir, 1);
-            out.push(DiffEntry {
-                entry_name: name.clone(),
-                path: target.path.clone(),
-                line_number: target.line_number,
-                old_value: target.target.clone(),
-                new_value: ir.to_owned(),
-                old_line,
-                new_line,
-            });
+
+            let diff_entry = match target {
+                Target::Line {
+                    path,
+                    line_number,
+                    target,
+                } => {
+                    let old_line = content
+                        .lines()
+                        .nth((line_number - 1) as usize)
+                        .unwrap_or("")
+                        .to_owned();
+                    let new_line = old_line.replacen(target, ir, 1);
+                    DiffEntry {
+                        entry_name: name.clone(),
+                        path: path.clone(),
+                        line_number: *line_number,
+                        old_value: target.clone(),
+                        new_value: ir.to_owned(),
+                        old_line,
+                        new_line,
+                    }
+                }
+                Target::Json { path, selector } => {
+                    let json: serde_json::Value = serde_json::from_str(content)?;
+                    let keys = split_selector(selector)?;
+                    let mut v = &json;
+                    for k in &keys {
+                        v = v
+                            .get(k.as_str())
+                            .ok_or_else(|| format!("key `{k}` not found in `{selector}`"))?;
+                    }
+                    let old_value = v.to_string();
+                    let last_key = keys.last().unwrap();
+                    let search = format!("\"{}\":", last_key);
+                    let (line_number, old_line) = content
+                        .lines()
+                        .enumerate()
+                        .find(|(_, l)| l.contains(&search) && l.contains(old_value.as_str()))
+                        .map(|(i, l)| ((i + 1) as u64, l.to_owned()))
+                        .unwrap_or((0, String::new()));
+                    let new_line = old_line.replacen(&old_value, ir, 1);
+                    DiffEntry {
+                        entry_name: name.clone(),
+                        path: path.clone(),
+                        line_number,
+                        old_value,
+                        new_value: ir.to_owned(),
+                        old_line,
+                        new_line,
+                    }
+                }
+            };
+            out.push(diff_entry);
         }
     }
     Ok(out)

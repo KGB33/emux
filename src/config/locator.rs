@@ -14,12 +14,25 @@ pub struct Locator {
     pub filters: Vec<Filter>,
 }
 
-/// A located line — the exact substring an overrider should find and replace.
+/// A located value — what an overrider should update.
 #[derive(Debug)]
-pub struct Target {
-    pub path: PathBuf,
-    pub line_number: u64,
-    pub target: String,
+pub enum Target {
+    /// A substring on a specific line; overrider replaces it with text.
+    Line {
+        path: PathBuf,
+        line_number: u64,
+        target: String,
+    },
+    /// A value at a JSON selector path; overrider updates it natively.
+    Json { path: PathBuf, selector: String },
+}
+
+impl Target {
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Line { path, .. } | Self::Json { path, .. } => path,
+        }
+    }
 }
 
 /// A single step in a locator pipeline.
@@ -31,6 +44,8 @@ pub enum Filter {
     Regex { pattern: String },
     /// `envFile("path", "VAR")` — targets a specific variable in a dotenv-style file.
     EnvFile { path: PathBuf, variable: String },
+    /// `jsonFile("path", ".key")` or `jsonFile("path", ".parent.child")` — targets a value in a JSON file.
+    JsonFile { path: PathBuf, selector: String },
 }
 
 impl Locator {
@@ -50,6 +65,14 @@ impl Locator {
                         dir.join(path)
                     };
                     return search_env_file(&abs, variable);
+                }
+                Filter::JsonFile { path, selector } => {
+                    let abs = if path.is_absolute() {
+                        path.clone()
+                    } else {
+                        dir.join(path)
+                    };
+                    return search_json_file(&abs, selector);
                 }
             }
         }
@@ -75,7 +98,7 @@ fn search_regex(
                 let matched_text = std::str::from_utf8(&line[mat.start()..mat.end()])
                     .unwrap_or("")
                     .to_owned();
-                self.matches.push(Target {
+                self.matches.push(Target::Line {
                     path: self.path.to_owned(),
                     line_number: m.line_number().unwrap_or(0),
                     target: matched_text,
@@ -107,13 +130,45 @@ fn search_env_file(path: &Path, variable: &str) -> Result<Vec<Target>, Box<dyn s
         .lines()
         .enumerate()
         .filter(|(_, line)| line.starts_with(&prefix))
-        .map(|(i, line)| Target {
+        .map(|(i, line)| Target::Line {
             path: path.to_owned(),
             line_number: (i + 1) as u64,
             target: line[prefix.len()..].to_owned(),
         })
         .collect();
     Ok(targets)
+}
+
+fn search_json_file(
+    path: &Path,
+    selector: &str,
+) -> Result<Vec<Target>, Box<dyn std::error::Error>> {
+    let content = std::fs::read_to_string(path)?;
+    let json: serde_json::Value = serde_json::from_str(&content)?;
+    let keys = split_selector(selector)?;
+    let mut v = &json;
+    for k in &keys {
+        v = v
+            .get(k.as_str())
+            .ok_or_else(|| format!("key `{k}` not found in `{selector}`"))?;
+    }
+    Ok(vec![Target::Json {
+        path: path.to_owned(),
+        selector: selector.to_owned(),
+    }])
+}
+
+pub(super) fn split_selector(selector: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let keys: Vec<String> = selector
+        .trim_start_matches('.')
+        .split('.')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect();
+    if keys.is_empty() {
+        return Err("selector must contain at least one key".into());
+    }
+    Ok(keys)
 }
 
 impl FromLua for Locator {
@@ -143,6 +198,10 @@ impl FromLua for Filter {
             "env_file" => Ok(Filter::EnvFile {
                 path: PathBuf::from(table.get::<String>("path")?),
                 variable: table.get("variable")?,
+            }),
+            "json_file" => Ok(Filter::JsonFile {
+                path: PathBuf::from(table.get::<String>("path")?),
+                selector: table.get("selector")?,
             }),
             other => Err(mlua::Error::FromLuaConversionError {
                 from: "table",
@@ -180,8 +239,9 @@ mod tests {
         };
         let targets = locator.locate(&dir).unwrap();
         assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].line_number, 2);
-        assert_eq!(targets[0].target, "PORT=8001");
+        assert!(
+            matches!(&targets[0], Target::Line { line_number: 2, target, .. } if target == "PORT=8001")
+        );
     }
 
     #[test]
@@ -203,7 +263,7 @@ mod tests {
         };
         let targets = locator.locate(&dir).unwrap();
         assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].path, dir.join("config.json"));
+        assert_eq!(targets[0].path(), dir.join("config.json"));
     }
 
     #[test]
@@ -221,8 +281,65 @@ mod tests {
         };
         let targets = locator.locate(&dir).unwrap();
         assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].line_number, 2);
-        assert_eq!(targets[0].target, "8001");
+        assert!(
+            matches!(&targets[0], Target::Line { line_number: 2, target, .. } if target == "8001")
+        );
+    }
+
+    #[test]
+    fn locate_json_file_returns_json_target() {
+        let dir = std::env::temp_dir().join("emux_test_jsonfile_flat");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(
+            &path,
+            "{\n  \"host\": \"localhost\",\n  \"port\": 8001\n}\n",
+        )
+        .unwrap();
+
+        let locator = Locator {
+            filters: vec![Filter::JsonFile {
+                path: path.clone(),
+                selector: ".port".to_string(),
+            }],
+        };
+        let targets = locator.locate(&dir).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(&targets[0], Target::Json { selector, .. } if selector == ".port"));
+    }
+
+    #[test]
+    fn locate_json_file_validates_nested_selector() {
+        let dir = std::env::temp_dir().join("emux_test_jsonfile_nested");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{\n  \"server\": {\n    \"port\": 9000\n  }\n}\n").unwrap();
+
+        let locator = Locator {
+            filters: vec![Filter::JsonFile {
+                path: path.clone(),
+                selector: ".server.port".to_string(),
+            }],
+        };
+        let targets = locator.locate(&dir).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(&targets[0], Target::Json { selector, .. } if selector == ".server.port"));
+    }
+
+    #[test]
+    fn locate_json_file_errors_on_missing_key() {
+        let dir = std::env::temp_dir().join("emux_test_jsonfile_missing");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{\"port\": 8001}\n").unwrap();
+
+        let locator = Locator {
+            filters: vec![Filter::JsonFile {
+                path: path.clone(),
+                selector: ".missing".to_string(),
+            }],
+        };
+        assert!(locator.locate(&dir).is_err());
     }
 
     #[test]
@@ -251,6 +368,19 @@ mod tests {
         let f = Filter::from_lua(v, &lua).unwrap();
         assert!(
             matches!(f, Filter::EnvFile { path, variable } if *path == *"api/.env" && variable == "PORT")
+        );
+    }
+
+    #[test]
+    fn filter_json_file_deserializes() {
+        let lua = Lua::new();
+        let v = eval(
+            &lua,
+            r#"{ __kind = "json_file", path = "config.json", selector = ".server.port" }"#,
+        );
+        let f = Filter::from_lua(v, &lua).unwrap();
+        assert!(
+            matches!(f, Filter::JsonFile { path, selector } if *path == *"config.json" && selector == ".server.port")
         );
     }
 

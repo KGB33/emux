@@ -48,6 +48,20 @@ mod tests {
     }
 
     #[test]
+    fn emux_l_json_file_returns_locator() {
+        let lua = loaded_lua();
+        let locator: Table = lua
+            .load(r#"emux.l.jsonFile("config.json", ".server.port")"#)
+            .eval()
+            .unwrap();
+        let filters: Table = locator.get("filters").unwrap();
+        let filter: Table = filters.get(1).unwrap();
+        assert_eq!(filter.get::<String>("__kind").unwrap(), "json_file");
+        assert_eq!(filter.get::<String>("path").unwrap(), "config.json");
+        assert_eq!(filter.get::<String>("selector").unwrap(), ".server.port");
+    }
+
+    #[test]
     fn emux_l_files_returns_locator() {
         let lua = loaded_lua();
         let locator: Table = lua.load(r#"emux.l.files("src/**/*.rs")"#).eval().unwrap();

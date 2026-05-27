@@ -1,6 +1,8 @@
 (local emux
   {:l {:envFile (fn [path variable]
                   {:filters [{:__kind :env_file :path path :variable variable}]})
+       :jsonFile (fn [path selector]
+                   {:filters [{:__kind :json_file :path path :selector selector}]})
        :files (fn [glob]
                 {:filters [{:__kind :file :glob glob}]})
        :regex (fn [target pattern]

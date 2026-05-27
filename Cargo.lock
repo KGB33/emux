@@ -171,6 +171,7 @@ dependencies = [
  "glob",
  "grep",
  "mlua",
+ "serde_json",
 ]
 
 [[package]]
