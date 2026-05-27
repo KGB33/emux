@@ -6,6 +6,12 @@ local cfg = {
     },
     override = emux.o.randPort,
   },
+  ["db-port"] = {
+    locate = {
+      emux.l.jsonFile("environment.local.json", ".dbPort"),
+    },
+    override = emux.o.randPort,
+  },
 }
 
 return cfg
