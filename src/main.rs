@@ -31,6 +31,11 @@ enum Commands {
         /// Path to the Lua (.lua) or Fennel (.fnl) config file.
         file: PathBuf,
     },
+    /// Restore files to their declared `base` values.
+    Restore {
+        /// Path to the Lua (.lua) or Fennel (.fnl) config file.
+        file: PathBuf,
+    },
 }
 
 fn main() {
@@ -40,5 +45,6 @@ fn main() {
         Commands::Verify { file } => commands::verify::run(file),
         Commands::Run { file } => commands::run::run(file),
         Commands::Diff { file } => commands::diff::run(file),
+        Commands::Restore { file } => commands::restore::run(file),
     }
 }

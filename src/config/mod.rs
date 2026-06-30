@@ -15,6 +15,7 @@ pub type Cfg = HashMap<String, ConfigEntry>;
 #[derive(Debug)]
 pub struct ConfigEntry {
     pub locate: Vec<Locator>,
+    pub base: Option<String>,
     pub overrider: Overrider, // `override` is a reserved keyword
 }
 
@@ -74,6 +75,19 @@ pub fn apply_cfg(cfg: &Cfg, dir: &Path) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+pub fn restore_cfg(cfg: &Cfg, dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    for (name, entry) in cfg {
+        let base = entry
+            .base
+            .as_ref()
+            .ok_or_else(|| format!("entry \"{name}\": restore requires a base value"))?;
+        for a in &entry.locate_all(dir)? {
+            a.apply(base)?;
+        }
+    }
+    Ok(())
+}
+
 /// Deserialize a `Cfg` from the value returned by evaluating a config file.
 pub fn cfg_from_lua(value: Value, lua: &Lua) -> LuaResult<Cfg> {
     let table = expect_table(value, "Cfg")?;
@@ -106,8 +120,9 @@ impl FromLua for ConfigEntry {
             locate.push(Locator::from_lua(locate_table.raw_get(i)?, lua)?);
         }
 
+        let base: Option<String> = table.get("base")?;
         let overrider = Overrider::from_lua(table.get("override")?, lua)?;
-        Ok(ConfigEntry { locate, overrider })
+        Ok(ConfigEntry { locate, base, overrider })
     }
 }
 
@@ -252,5 +267,99 @@ mod tests {
         assert_eq!(first, second, "second run must not change the file");
         assert!(first.starts_with("PORT="));
         assert_ne!(first.trim(), "PORT=4327", "port should have been overridden");
+    }
+
+    #[test]
+    fn base_accepts_number() {
+        let lua = Lua::new();
+        let v = eval(
+            &lua,
+            r#"{ locate = {}, base = 4327, override = { __kind = "port" } }"#,
+        );
+        let entry = ConfigEntry::from_lua(v, &lua).unwrap();
+        assert_eq!(entry.base.as_deref(), Some("4327"));
+    }
+
+    #[test]
+    fn base_absent_is_none() {
+        let lua = Lua::new();
+        let v = eval(&lua, r#"{ locate = {}, override = { __kind = "port" } }"#);
+        let entry = ConfigEntry::from_lua(v, &lua).unwrap();
+        assert_eq!(entry.base, None);
+    }
+
+    #[test]
+    fn restore_returns_to_base() {
+        let dir = std::env::temp_dir().join("emux_test_restore_env");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "PORT=4327\n").unwrap();
+        let path = dir.join("emux.lua");
+        std::fs::write(
+            &path,
+            r#"
+            return { ["api-port"] = {
+                locate = { emux.l.envFile(".env", "PORT") },
+                base = "4327",
+                override = emux.o.port,
+            } }
+            "#,
+        )
+        .unwrap();
+        let cfg = load_config_file(&path).unwrap();
+        apply_cfg(&cfg, &dir).unwrap();
+        assert_ne!(
+            std::fs::read_to_string(dir.join(".env")).unwrap().trim(),
+            "PORT=4327"
+        );
+        restore_cfg(&cfg, &dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".env")).unwrap(),
+            "PORT=4327\n"
+        );
+    }
+
+    #[test]
+    fn restore_json_returns_to_base() {
+        let dir = std::env::temp_dir().join("emux_test_restore_json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("env.json"), "{\n  \"port\": 4327\n}\n").unwrap();
+        let path = dir.join("emux.lua");
+        std::fs::write(
+            &path,
+            r#"
+            return { ["api-port"] = {
+                locate = { emux.l.jsonFile("env.json", ".port") },
+                base = "4327",
+                override = emux.o.port,
+            } }
+            "#,
+        )
+        .unwrap();
+        let cfg = load_config_file(&path).unwrap();
+        apply_cfg(&cfg, &dir).unwrap();
+        restore_cfg(&cfg, &dir).unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("env.json")).unwrap()).unwrap();
+        assert_eq!(json["port"].as_u64().unwrap(), 4327);
+    }
+
+    #[test]
+    fn restore_requires_base() {
+        let dir = std::env::temp_dir().join("emux_test_restore_nobase");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "PORT=4327\n").unwrap();
+        let path = dir.join("emux.lua");
+        std::fs::write(
+            &path,
+            r#"
+            return { ["api-port"] = {
+                locate = { emux.l.envFile(".env", "PORT") },
+                override = emux.o.port,
+            } }
+            "#,
+        )
+        .unwrap();
+        let cfg = load_config_file(&path).unwrap();
+        assert!(restore_cfg(&cfg, &dir).is_err());
     }
 }
