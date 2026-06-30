@@ -1,4 +1,4 @@
 {
-  "apiUrl": "http://localhost:4327",
+  "apiPort": 4327,
   "dbPort": 5432
 }

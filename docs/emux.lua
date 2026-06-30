@@ -7,11 +7,10 @@
 
 ---@class EmuxLocators
 ---@field envFile fun(path: string, variable: string): Locator Target a variable in a dotenv-style file.
----@field files fun(glob: string): Locator Locate files matching a glob pattern.
----@field regex fun(target: Locator, pattern: string): Locator Chain a regex filter onto a locator pipeline.
+---@field jsonFile fun(path: string, selector: string): Locator Target a value at a dotted selector in a JSON file.
 
 ---@class EmuxOverriders
----@field randPort Overrider Replace located values with a randomly generated free port.
+---@field port Overrider Replace located values with a deterministic per-worktree free-range port.
 
 ---@class EmuxLib The emux API available in all config files.
 ---@field l EmuxLocators Locator functions.
