@@ -48,15 +48,15 @@ pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::er
     let mut out = vec![];
     for (name, entry) in cfg {
         let applicators = entry.locate_all(dir)?;
-        let ir = entry.overrider.ir_label();
+        let new_value = entry.overrider.value(dir, name)?;
         for a in &applicators {
-            let new_line = a.old_line.replacen(&a.old_value, ir, 1);
+            let new_line = a.old_line.replacen(&a.old_value, &new_value, 1);
             out.push(DiffEntry {
                 entry_name: name.clone(),
                 path: a.path.clone(),
                 line_number: a.line_number,
                 old_value: a.old_value.clone(),
-                new_value: ir.to_owned(),
+                new_value: new_value.clone(),
                 old_line: a.old_line.clone(),
                 new_line,
             });
@@ -66,8 +66,10 @@ pub fn diff_cfg(cfg: &Cfg, dir: &Path) -> Result<Vec<DiffEntry>, Box<dyn std::er
 }
 
 pub fn apply_cfg(cfg: &Cfg, dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    for entry in cfg.values() {
-        entry.overrider.apply(&entry.locate_all(dir)?)?;
+    for (name, entry) in cfg {
+        entry
+            .overrider
+            .apply(dir, name, &entry.locate_all(dir)?)?;
     }
     Ok(())
 }
@@ -138,14 +140,14 @@ mod tests {
                     { filters = { { __kind = "env_file", path = "api/.env", variable = "PORT" } } },
                     { filters = { { __kind = "json_file", path = "client/env.json", selector = ".port" } } },
                 },
-                override = { __kind = "random_port" },
+                override = { __kind = "port" },
             }"#,
         );
         let entry = ConfigEntry::from_lua(v, &lua).unwrap();
         assert_eq!(entry.locate.len(), 2);
         assert_eq!(entry.locate[0].filters.len(), 1);
         assert_eq!(entry.locate[1].filters.len(), 1);
-        assert!(matches!(entry.overrider, Overrider::RandomPort));
+        assert!(matches!(entry.overrider, Overrider::Port));
     }
 
     #[test]
@@ -158,7 +160,7 @@ mod tests {
                     locate = {
                         { filters = { { __kind = "env_file", path = "api/.env", variable = "PORT" } } },
                     },
-                    override = { __kind = "random_port" },
+                    override = { __kind = "port" },
                 },
             }"#,
         );
@@ -185,7 +187,7 @@ mod tests {
             local cfg = {
                 ["api-port"] = {
                     locate = { emux.l.envFile("api/.env", "PORT") },
-                    override = emux.o.randPort,
+                    override = emux.o.port,
                 },
             }
             return cfg
@@ -207,7 +209,7 @@ mod tests {
             (local cfg
               {"api-port"
                {:locate [(emux.l.envFile "api/.env" "PORT")]
-                :override emux.o.randPort}})
+                :override emux.o.port}})
             cfg
             "#,
         )
@@ -223,5 +225,32 @@ mod tests {
         let path = dir.join("emux.txt");
         std::fs::write(&path, "").unwrap();
         assert!(load_config_file(&path).is_err());
+    }
+
+    #[test]
+    fn run_is_idempotent() {
+        let dir = std::env::temp_dir().join("emux_test_idempotent");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".env"), "PORT=4327\n").unwrap();
+        let path = dir.join("emux.lua");
+        std::fs::write(
+            &path,
+            r#"
+            return { ["api-port"] = {
+                locate = { emux.l.envFile(".env", "PORT") },
+                base = "4327",
+                override = emux.o.port,
+            } }
+            "#,
+        )
+        .unwrap();
+        let cfg = load_config_file(&path).unwrap();
+        apply_cfg(&cfg, &dir).unwrap();
+        let first = std::fs::read_to_string(dir.join(".env")).unwrap();
+        apply_cfg(&cfg, &dir).unwrap();
+        let second = std::fs::read_to_string(dir.join(".env")).unwrap();
+        assert_eq!(first, second, "second run must not change the file");
+        assert!(first.starts_with("PORT="));
+        assert_ne!(first.trim(), "PORT=4327", "port should have been overridden");
     }
 }

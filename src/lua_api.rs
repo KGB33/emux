@@ -63,9 +63,9 @@ mod tests {
 
 
     #[test]
-    fn emux_o_rand_port_is_random_port_table() {
+    fn emux_o_port_is_port_table() {
         let lua = loaded_lua();
-        let kind: String = lua.load(r#"emux.o.randPort.__kind"#).eval().unwrap();
-        assert_eq!(kind, "random_port");
+        let kind: String = lua.load(r#"emux.o.port.__kind"#).eval().unwrap();
+        assert_eq!(kind, "port");
     }
 }
