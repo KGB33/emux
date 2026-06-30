@@ -136,10 +136,7 @@ mod tests {
             r#"{
                 locate = {
                     { filters = { { __kind = "env_file", path = "api/.env", variable = "PORT" } } },
-                    { filters = {
-                        { __kind = "file", glob = "client/**/*.json" },
-                        { __kind = "regex", pattern = "8001" }
-                    } },
+                    { filters = { { __kind = "json_file", path = "client/env.json", selector = ".port" } } },
                 },
                 override = { __kind = "random_port" },
             }"#,
@@ -147,7 +144,7 @@ mod tests {
         let entry = ConfigEntry::from_lua(v, &lua).unwrap();
         assert_eq!(entry.locate.len(), 2);
         assert_eq!(entry.locate[0].filters.len(), 1);
-        assert_eq!(entry.locate[1].filters.len(), 2);
+        assert_eq!(entry.locate[1].filters.len(), 1);
         assert!(matches!(entry.overrider, Overrider::RandomPort));
     }
 
@@ -159,7 +156,7 @@ mod tests {
             r#"{
                 ["api-port"] = {
                     locate = {
-                        { filters = { { __kind = "file", glob = "api/.env" }, { __kind = "regex", pattern = "8001" } } },
+                        { filters = { { __kind = "env_file", path = "api/.env", variable = "PORT" } } },
                     },
                     override = { __kind = "random_port" },
                 },

@@ -1,9 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use glob::glob;
-use grep::matcher::Matcher;
-use grep::regex::RegexMatcher;
-use grep::searcher::{Searcher, SearcherBuilder, Sink, SinkMatch};
 use mlua::{FromLua, Lua, Result as LuaResult, Value};
 
 use super::expect_table;
@@ -75,10 +71,6 @@ impl Applicator {
 /// A single step in a locator pipeline.
 #[derive(Debug)]
 pub enum Filter {
-    /// `files("glob")` — repo → files matching the glob.
-    File { glob: String },
-    /// `regex("pattern")` — files → line locations matching the pattern.
-    Regex { pattern: String },
     /// `envFile("path", "VAR")` — targets a specific variable in a dotenv-style file.
     EnvFile { path: PathBuf, variable: String },
     /// `jsonFile("path", ".key")` or `jsonFile("path", ".parent.child")` — targets a value in a JSON file.
@@ -87,84 +79,20 @@ pub enum Filter {
 
 impl Locator {
     pub fn locate(&self, dir: &Path) -> Result<Vec<Applicator>, Box<dyn std::error::Error>> {
-        let mut paths: Vec<PathBuf> = vec![];
         for filter in &self.filters {
             match filter {
-                Filter::File { glob: pattern } => {
-                    let full = dir.join(pattern).to_string_lossy().into_owned();
-                    paths = glob(&full)?.filter_map(|e| e.ok()).collect();
-                }
-                Filter::Regex { pattern } => return search_regex(pattern, &paths),
                 Filter::EnvFile { path, variable } => {
-                    let abs = if path.is_absolute() {
-                        path.clone()
-                    } else {
-                        dir.join(path)
-                    };
+                    let abs = if path.is_absolute() { path.clone() } else { dir.join(path) };
                     return search_env_file(&abs, variable);
                 }
                 Filter::JsonFile { path, selector } => {
-                    let abs = if path.is_absolute() {
-                        path.clone()
-                    } else {
-                        dir.join(path)
-                    };
+                    let abs = if path.is_absolute() { path.clone() } else { dir.join(path) };
                     return search_json_file(&abs, selector);
                 }
             }
         }
         Ok(vec![])
     }
-}
-
-fn search_regex(
-    pattern: &str,
-    paths: &[PathBuf],
-) -> Result<Vec<Applicator>, Box<dyn std::error::Error>> {
-    struct MatchSink<'a> {
-        path: &'a Path,
-        matcher: &'a RegexMatcher,
-        matches: Vec<Applicator>,
-    }
-
-    impl Sink for MatchSink<'_> {
-        type Error = std::io::Error;
-        fn matched(&mut self, _: &Searcher, m: &SinkMatch) -> Result<bool, Self::Error> {
-            let line_bytes = m.bytes();
-            if let Ok(Some(mat)) = self.matcher.find(line_bytes) {
-                let old_value = std::str::from_utf8(&line_bytes[mat.start()..mat.end()])
-                    .unwrap_or("")
-                    .to_owned();
-                let old_line = std::str::from_utf8(line_bytes)
-                    .unwrap_or("")
-                    .trim_end_matches(['\n', '\r'])
-                    .to_owned();
-                let line_number = m.line_number().unwrap_or(0);
-                self.matches.push(Applicator::new(
-                    self.path.to_owned(),
-                    Some(line_number),
-                    old_value,
-                    old_line,
-                    Writer::InFileLine { line_number },
-                ));
-            }
-            Ok(true)
-        }
-    }
-
-    let matcher = RegexMatcher::new(pattern)?;
-    let mut searcher = SearcherBuilder::new().line_number(true).build();
-    let mut all = vec![];
-    for path in paths {
-        let mut sink = MatchSink {
-            path,
-            matcher: &matcher,
-            matches: vec![],
-        };
-        searcher.search_path(&matcher, path, &mut sink)?;
-        all.extend(sink.matches);
-    }
-    Ok(all)
 }
 
 fn search_env_file(
@@ -298,12 +226,6 @@ impl FromLua for Filter {
         let table = expect_table(value, "Filter")?;
         let kind: String = table.get("__kind")?;
         match kind.as_str() {
-            "file" => Ok(Filter::File {
-                glob: table.get("glob")?,
-            }),
-            "regex" => Ok(Filter::Regex {
-                pattern: table.get("pattern")?,
-            }),
             "env_file" => Ok(Filter::EnvFile {
                 path: PathBuf::from(table.get::<String>("path")?),
                 variable: table.get("variable")?,
@@ -329,50 +251,6 @@ mod tests {
         lua.load(src).eval().unwrap()
     }
 
-    #[test]
-    fn locate_regex_finds_matching_lines() {
-        let dir = std::env::temp_dir().join("emux_test_search");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.json");
-        std::fs::write(&path, "no match here\nPORT=8001\nalso no match\n").unwrap();
-
-        let locator = Locator {
-            filters: vec![
-                Filter::File {
-                    glob: "config.json".to_string(),
-                },
-                Filter::Regex {
-                    pattern: "PORT=8001".to_string(),
-                },
-            ],
-        };
-        let applicators = locator.locate(&dir).unwrap();
-        assert_eq!(applicators.len(), 1);
-        assert_eq!(applicators[0].line_number, Some(2));
-        assert_eq!(applicators[0].old_value, "PORT=8001");
-    }
-
-    #[test]
-    fn locate_file_glob_limits_search_scope() {
-        let dir = std::env::temp_dir().join("emux_test_expand");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("config.json"), "PORT=8001\n").unwrap();
-        std::fs::write(dir.join("other.txt"), "PORT=8001\n").unwrap();
-
-        let locator = Locator {
-            filters: vec![
-                Filter::File {
-                    glob: "*.json".to_string(),
-                },
-                Filter::Regex {
-                    pattern: "PORT=8001".to_string(),
-                },
-            ],
-        };
-        let applicators = locator.locate(&dir).unwrap();
-        assert_eq!(applicators.len(), 1);
-        assert_eq!(applicators[0].path, dir.join("config.json"));
-    }
 
     #[test]
     fn locate_env_file_finds_variable() {
@@ -529,21 +407,6 @@ mod tests {
         assert!(content.contains("PORT=9999"));
     }
 
-    #[test]
-    fn filter_file_deserializes() {
-        let lua = Lua::new();
-        let v = eval(&lua, r#"{ __kind = "file", glob = "src/**/*.rs" }"#);
-        let f = Filter::from_lua(v, &lua).unwrap();
-        assert!(matches!(f, Filter::File { glob } if glob == "src/**/*.rs"));
-    }
-
-    #[test]
-    fn filter_regex_deserializes() {
-        let lua = Lua::new();
-        let v = eval(&lua, r#"{ __kind = "regex", pattern = "8001" }"#);
-        let f = Filter::from_lua(v, &lua).unwrap();
-        assert!(matches!(f, Filter::Regex { pattern } if pattern == "8001"));
-    }
 
     #[test]
     fn filter_env_file_deserializes() {
@@ -579,30 +442,14 @@ mod tests {
     }
 
     #[test]
-    fn locator_single_filter() {
+    fn locator_single_env_filter() {
         let lua = Lua::new();
         let v = eval(
             &lua,
-            r#"{ filters = { { __kind = "file", glob = "*.lua" } } }"#,
+            r#"{ filters = { { __kind = "env_file", path = "api/.env", variable = "PORT" } } }"#,
         );
         let loc = Locator::from_lua(v, &lua).unwrap();
         assert_eq!(loc.filters.len(), 1);
-        assert!(matches!(&loc.filters[0], Filter::File { glob } if glob == "*.lua"));
-    }
-
-    #[test]
-    fn locator_chained_filters() {
-        let lua = Lua::new();
-        let v = eval(
-            &lua,
-            r#"{ filters = {
-                { __kind = "file", glob = "client/**/*.json" },
-                { __kind = "regex", pattern = "8001" }
-            } }"#,
-        );
-        let loc = Locator::from_lua(v, &lua).unwrap();
-        assert_eq!(loc.filters.len(), 2);
-        assert!(matches!(&loc.filters[0], Filter::File { .. }));
-        assert!(matches!(&loc.filters[1], Filter::Regex { pattern } if pattern == "8001"));
+        assert!(matches!(&loc.filters[0], Filter::EnvFile { variable, .. } if variable == "PORT"));
     }
 }
