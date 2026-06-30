@@ -61,7 +61,6 @@ mod tests {
         assert_eq!(filter.get::<String>("selector").unwrap(), ".server.port");
     }
 
-
     #[test]
     fn emux_o_port_is_port_table() {
         let lua = loaded_lua();

@@ -79,19 +79,19 @@ pub enum Filter {
 
 impl Locator {
     pub fn locate(&self, dir: &Path) -> Result<Vec<Applicator>, Box<dyn std::error::Error>> {
-        for filter in &self.filters {
-            match filter {
-                Filter::EnvFile { path, variable } => {
-                    let abs = if path.is_absolute() { path.clone() } else { dir.join(path) };
-                    return search_env_file(&abs, variable);
-                }
-                Filter::JsonFile { path, selector } => {
-                    let abs = if path.is_absolute() { path.clone() } else { dir.join(path) };
-                    return search_json_file(&abs, selector);
-                }
+        let Some(filter) = self.filters.first() else {
+            return Ok(vec![]);
+        };
+        match filter {
+            Filter::EnvFile { path, variable } => {
+                let abs = if path.is_absolute() { path.clone() } else { dir.join(path) };
+                search_env_file(&abs, variable)
+            }
+            Filter::JsonFile { path, selector } => {
+                let abs = if path.is_absolute() { path.clone() } else { dir.join(path) };
+                search_json_file(&abs, selector)
             }
         }
-        Ok(vec![])
     }
 }
 
@@ -251,7 +251,6 @@ mod tests {
         lua.load(src).eval().unwrap()
     }
 
-
     #[test]
     fn locate_env_file_finds_variable() {
         let dir = std::env::temp_dir().join("emux_test_envfile");
@@ -406,7 +405,6 @@ mod tests {
         );
         assert!(content.contains("PORT=9999"));
     }
-
 
     #[test]
     fn filter_env_file_deserializes() {
